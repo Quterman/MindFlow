@@ -1,11 +1,23 @@
 import DiaryApp from "../DiaryApp";
-import { listReflections } from "../db";
+import { redirect } from "next/navigation";
+import { getAuthenticatedUser } from "../../lib/supabase/server";
+import { listReflections } from "../reflection-store";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export default function AppPage() {
-  const reflections = listReflections();
+export default async function AppPage() {
+  const user = await getAuthenticatedUser();
+  if (!user) {
+    redirect("/login");
+  }
 
-  return <DiaryApp initialReflections={reflections} />;
+  const reflections = await listReflections(user.supabase, user.userId);
+
+  return (
+    <DiaryApp
+      initialReflections={reflections}
+      userEmail={user.email || "Личный аккаунт"}
+    />
+  );
 }
