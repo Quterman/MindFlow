@@ -66,8 +66,10 @@ declare global {
 
 export default function DiaryApp({
   initialReflections,
+  userEmail,
 }: {
   initialReflections: Reflection[];
+  userEmail: string;
 }) {
   const [reflections, setReflections] = useState<Reflection[]>(initialReflections);
   const [rawText, setRawText] = useState("");
@@ -408,6 +410,22 @@ export default function DiaryApp({
         className="relative mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 py-6 sm:px-6"
         ref={topRef}
       >
+        <div className="flex items-center justify-between gap-3 px-1 text-sm text-[#6c5b4d]">
+          <p className="min-w-0 truncate" title={userEmail}>
+            <span className="font-black text-[#8b5a22]">MindFlow</span>
+            <span aria-hidden="true"> · </span>
+            <span>{userEmail}</span>
+          </p>
+          <form action="/auth/signout" method="post">
+            <button
+              className="shrink-0 rounded-full border border-[#3a2a1d]/10 px-3 py-2 font-bold text-[#7a4a1d] transition hover:bg-[#3a2a1d]/5"
+              type="submit"
+            >
+              Выйти
+            </button>
+          </form>
+        </div>
+
         <div className="hidden sm:block">
           <DiaryNavigation
             activeView={activeView}

@@ -1,0 +1,274 @@
+import "server-only";
+
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { analyzeReflection, type Reflection } from "./reflection-analysis";
+
+type ReflectionRow = {
+  id: string;
+  entry_date: string;
+  raw_text: string;
+  transcript: string;
+  summary: string;
+  themes: unknown;
+  insights: unknown;
+  todos: unknown;
+  completed_todos: unknown;
+  repeats: unknown;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listReflections(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<Reflection[]> {
+  const { data, error } = await supabase
+    .from("mindflow_entries")
+    .select("*")
+    .eq("user_id", userId)
+    .order("entry_date", { ascending: false })
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    throw error;
+  }
+
+  return (data as ReflectionRow[]).map(rowToReflection);
+}
+
+export async function createReflection(
+  supabase: SupabaseClient,
+  userId: string,
+  input: { rawText: string; entryDate?: string },
+) {
+  const entryDate = input.entryDate || today();
+  const previous = (await listReflections(supabase, userId)).filter(
+    (item) => item.entryDate < entryDate,
+  );
+  const analysis = analyzeReflection(input.rawText, previous, entryDate);
+  const { data, error } = await supabase
+    .from("mindflow_entries")
+    .insert({
+      completed_todos: [],
+      entry_date: entryDate,
+      insights: analysis.insights,
+      raw_text: input.rawText,
+      repeats: analysis.repeats,
+      summary: analysis.summary,
+      themes: analysis.themes,
+      todos: analysis.todos,
+      transcript: input.rawText,
+      user_id: userId,
+    })
+    .select("*")
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  return rowToReflection(data as ReflectionRow);
+}
+
+export async function updateReflection(
+  supabase: SupabaseClient,
+  userId: string,
+  input: {
+    id: string;
+    rawText: string;
+    entryDate?: string;
+    summary?: string;
+  },
+) {
+  const existing = await findReflection(supabase, userId, input.id);
+  if (!existing) {
+    return null;
+  }
+
+  if (input.summary !== undefined) {
+    const { data, error } = await supabase
+      .from("mindflow_entries")
+      .update({
+        summary: input.summary,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", input.id)
+      .eq("user_id", userId)
+      .select("*")
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    return data ? rowToReflection(data as ReflectionRow) : null;
+  }
+
+  const nextDate = input.entryDate || existing.entryDate;
+  const previous = (await listReflections(supabase, userId)).filter(
+    (item) => item.id !== input.id && item.entryDate < nextDate,
+  );
+  const analysis = analyzeReflection(input.rawText, previous, nextDate);
+  const completedTodos = existing.completedTodos.filter((todo) =>
+    analysis.todos.includes(todo),
+  );
+  const { data, error } = await supabase
+    .from("mindflow_entries")
+    .update({
+      completed_todos: completedTodos,
+      entry_date: nextDate,
+      insights: analysis.insights,
+      raw_text: input.rawText,
+      repeats: analysis.repeats,
+      summary: analysis.summary,
+      themes: analysis.themes,
+      todos: analysis.todos,
+      transcript: input.rawText,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", input.id)
+    .eq("user_id", userId)
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data ? rowToReflection(data as ReflectionRow) : null;
+}
+
+export async function deleteReflection(
+  supabase: SupabaseClient,
+  userId: string,
+  id: string,
+) {
+  const { error } = await supabase
+    .from("mindflow_entries")
+    .delete()
+    .eq("id", id)
+    .eq("user_id", userId);
+
+  if (error) {
+    throw error;
+  }
+}
+
+export async function updateCompletedTodos(
+  supabase: SupabaseClient,
+  userId: string,
+  id: string,
+  completedTodos: string[],
+) {
+  const existing = await findReflection(supabase, userId, id);
+  if (!existing) {
+    return { status: "not-found" as const };
+  }
+
+  if (completedTodos.some((todo) => !existing.todos.includes(todo))) {
+    return { status: "invalid-todo" as const };
+  }
+
+  const normalizedCompletedTodos = existing.todos.filter((todo) =>
+    completedTodos.includes(todo),
+  );
+
+  if (
+    normalizedCompletedTodos.length === existing.completedTodos.length &&
+    normalizedCompletedTodos.every(
+      (todo, index) => todo === existing.completedTodos[index],
+    )
+  ) {
+    return { status: "updated" as const, reflection: existing };
+  }
+
+  const { data, error } = await supabase
+    .from("mindflow_entries")
+    .update({
+      completed_todos: normalizedCompletedTodos,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .eq("user_id", userId)
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+  if (!data) {
+    return { status: "not-found" as const };
+  }
+
+  return {
+    status: "updated" as const,
+    reflection: rowToReflection(data as ReflectionRow),
+  };
+}
+
+async function findReflection(
+  supabase: SupabaseClient,
+  userId: string,
+  id: string,
+) {
+  const { data, error } = await supabase
+    .from("mindflow_entries")
+    .select("*")
+    .eq("id", id)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data ? rowToReflection(data as ReflectionRow) : null;
+}
+
+function rowToReflection(row: ReflectionRow): Reflection {
+  const todos = stringArray(row.todos);
+  const storedCompletedTodos = new Set(stringArray(row.completed_todos));
+
+  return {
+    id: row.id,
+    entryDate: row.entry_date,
+    rawText: row.raw_text,
+    transcript: row.transcript,
+    summary: row.summary,
+    themes: stringArray(row.themes),
+    insights: stringArray(row.insights),
+    todos,
+    completedTodos: todos.filter((todo) => storedCompletedTodos.has(todo)),
+    repeats: repeatArray(row.repeats),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function stringArray(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function repeatArray(value: unknown): Reflection["repeats"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter(
+    (item): item is Reflection["repeats"][number] =>
+      typeof item === "object" &&
+      item !== null &&
+      "title" in item &&
+      typeof item.title === "string" &&
+      "description" in item &&
+      typeof item.description === "string" &&
+      "previousDate" in item &&
+      typeof item.previousDate === "string",
+  );
+}
+
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}

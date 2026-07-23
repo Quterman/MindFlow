@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
+import { getAuthenticatedUser } from "../../../../lib/supabase/server";
 import {
   deleteReflection,
   updateCompletedTodos,
   updateReflection,
-} from "../../../db";
+} from "../../../reflection-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,6 +14,11 @@ type RouteContext = {
 };
 
 export async function PATCH(request: Request, context: RouteContext) {
+  const user = await getAuthenticatedUser();
+  if (!user) {
+    return NextResponse.json({ error: "Требуется вход." }, { status: 401 });
+  }
+
   const { id } = await context.params;
   let body: {
     rawText?: string;
@@ -55,7 +61,12 @@ export async function PATCH(request: Request, context: RouteContext) {
       );
     }
 
-    const result = updateCompletedTodos(id, body.completedTodos);
+    const result = await updateCompletedTodos(
+      user.supabase,
+      user.userId,
+      id,
+      body.completedTodos,
+    );
     if (result.status === "not-found") {
       return NextResponse.json({ error: "Запись не найдена." }, { status: 404 });
     }
@@ -77,7 +88,7 @@ export async function PATCH(request: Request, context: RouteContext) {
       );
     }
 
-    const reflection = updateReflection({
+    const reflection = await updateReflection(user.supabase, user.userId, {
       id,
       rawText: "",
       summary: body.summary.trim(),
@@ -97,7 +108,17 @@ export async function PATCH(request: Request, context: RouteContext) {
     );
   }
 
-  const reflection = updateReflection({
+  if (
+    body.entryDate !== undefined &&
+    !/^\d{4}-\d{2}-\d{2}$/.test(body.entryDate)
+  ) {
+    return NextResponse.json(
+      { error: "Передайте корректную дату записи." },
+      { status: 400 },
+    );
+  }
+
+  const reflection = await updateReflection(user.supabase, user.userId, {
     id,
     rawText: body.rawText.trim(),
     entryDate: body.entryDate,
@@ -111,8 +132,13 @@ export async function PATCH(request: Request, context: RouteContext) {
 }
 
 export async function DELETE(_request: Request, context: RouteContext) {
+  const user = await getAuthenticatedUser();
+  if (!user) {
+    return NextResponse.json({ error: "Требуется вход." }, { status: 401 });
+  }
+
   const { id } = await context.params;
-  deleteReflection(id);
+  await deleteReflection(user.supabase, user.userId, id);
 
   return NextResponse.json({ ok: true });
 }
