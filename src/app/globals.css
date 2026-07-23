@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f4eadb;
+  --foreground: #221a13;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+}
+
+body {
+  min-height: 100%;
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family:
+    "Avenir Next",
+    "Trebuchet MS",
+    "Segoe UI",
+    sans-serif;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+.font-serif-display {
+  font-family:
+    "Iowan Old Style",
+    "Palatino Linotype",
+    Palatino,
+    Georgia,
+    serif;
+}
+
+.paper-grid {
+  background-image:
+    linear-gradient(rgba(56, 42, 29, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 42, 29, 0.032) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: linear-gradient(to bottom, black 0%, transparent 84%);
+}
+
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+::selection {
+  background: #d58b22;
+  color: #fff7e8;
+}
