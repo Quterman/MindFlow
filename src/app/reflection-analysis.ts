@@ -1,3 +1,17 @@
+export type AnalysisSource = "ai" | "fallback" | "legacy";
+
+export type ReflectionAnalysis = {
+  summary: string;
+  themes: string[];
+  insights: string[];
+  todos: string[];
+  repeats: Array<{
+    title: string;
+    description: string;
+    previousDate: string;
+  }>;
+};
+
 export type Reflection = {
   id: string;
   entryDate: string;
@@ -13,15 +27,19 @@ export type Reflection = {
     description: string;
     previousDate: string;
   }>;
+  analysisSource: AnalysisSource;
+  analysisModel: string | null;
+  analysisVersion: string | null;
+  analysisGeneratedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
 
-export function analyzeReflection(
+export function analyzeReflectionWithRules(
   rawText: string,
   previous: Reflection[],
   entryDate: string,
-) {
+): ReflectionAnalysis {
   const normalized = rawText.toLowerCase();
   const sentences = splitSentences(rawText);
   const themes = detectThemes(normalized);
