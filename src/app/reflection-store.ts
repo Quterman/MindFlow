@@ -1,7 +1,11 @@
 import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { analyzeReflection, type Reflection } from "./reflection-analysis";
+import type {
+  AnalysisSource,
+  Reflection,
+} from "./reflection-analysis";
+import { analyzeReflection } from "./reflection-ai";
 
 type ReflectionRow = {
   id: string;
@@ -14,6 +18,10 @@ type ReflectionRow = {
   todos: unknown;
   completed_todos: unknown;
   repeats: unknown;
+  analysis_source?: unknown;
+  analysis_model?: unknown;
+  analysis_version?: unknown;
+  analysis_generated_at?: unknown;
   created_at: string;
   updated_at: string;
 };
@@ -45,10 +53,14 @@ export async function createReflection(
   const previous = (await listReflections(supabase, userId)).filter(
     (item) => item.entryDate < entryDate,
   );
-  const analysis = analyzeReflection(input.rawText, previous, entryDate);
+  const analysis = await analyzeReflection(input.rawText, previous, entryDate);
   const { data, error } = await supabase
     .from("mindflow_entries")
     .insert({
+      analysis_generated_at: analysis.analysisGeneratedAt,
+      analysis_model: analysis.analysisModel,
+      analysis_source: analysis.analysisSource,
+      analysis_version: analysis.analysisVersion,
       completed_todos: [],
       entry_date: entryDate,
       insights: analysis.insights,
@@ -108,13 +120,17 @@ export async function updateReflection(
   const previous = (await listReflections(supabase, userId)).filter(
     (item) => item.id !== input.id && item.entryDate < nextDate,
   );
-  const analysis = analyzeReflection(input.rawText, previous, nextDate);
+  const analysis = await analyzeReflection(input.rawText, previous, nextDate);
   const completedTodos = existing.completedTodos.filter((todo) =>
     analysis.todos.includes(todo),
   );
   const { data, error } = await supabase
     .from("mindflow_entries")
     .update({
+      analysis_generated_at: analysis.analysisGeneratedAt,
+      analysis_model: analysis.analysisModel,
+      analysis_source: analysis.analysisSource,
+      analysis_version: analysis.analysisVersion,
       completed_todos: completedTodos,
       entry_date: nextDate,
       insights: analysis.insights,
@@ -240,6 +256,10 @@ function rowToReflection(row: ReflectionRow): Reflection {
     todos,
     completedTodos: todos.filter((todo) => storedCompletedTodos.has(todo)),
     repeats: repeatArray(row.repeats),
+    analysisSource: analysisSource(row.analysis_source),
+    analysisModel: nullableString(row.analysis_model),
+    analysisVersion: nullableString(row.analysis_version),
+    analysisGeneratedAt: nullableString(row.analysis_generated_at),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -267,6 +287,14 @@ function repeatArray(value: unknown): Reflection["repeats"] {
       "previousDate" in item &&
       typeof item.previousDate === "string",
   );
+}
+
+function analysisSource(value: unknown): AnalysisSource {
+  return value === "ai" || value === "fallback" ? value : "legacy";
+}
+
+function nullableString(value: unknown) {
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 function today() {

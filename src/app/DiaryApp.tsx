@@ -23,6 +23,10 @@ type Reflection = {
     description: string;
     previousDate: string;
   }>;
+  analysisSource: "ai" | "fallback" | "legacy";
+  analysisModel: string | null;
+  analysisVersion: string | null;
+  analysisGeneratedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -170,6 +174,11 @@ export default function DiaryApp({
       setRawText("");
       setEntryDate(today());
       setTodoError(null);
+      setMessage(
+        data.reflection.analysisSource === "fallback"
+          ? "AI-анализ временно недоступен. Запись сохранена с базовым разбором."
+          : "",
+      );
     } catch {
       setMessage(
         "Не получилось связаться с дневником. Запись не сохранена — попробуйте ещё раз.",
@@ -648,6 +657,7 @@ function CaptureView({
             }`}
             disabled={isSaving}
             id="reflection-text"
+            maxLength={12_000}
             onChange={(event) => onChangeText(event.target.value)}
             placeholder={
               isRecording
@@ -961,6 +971,11 @@ function DayOverview({
               <p className="text-xs font-black uppercase tracking-[0.1em] text-[#a96214]">
                 Запись {entries.length - index} · {formatTime(reflection.createdAt)}
               </p>
+              {reflection.analysisSource === "fallback" && (
+                <p className="mt-2 inline-flex rounded-full bg-[#efe0c8] px-2.5 py-1 text-xs font-bold text-[#7a4a1d]">
+                  Базовый разбор
+                </p>
+              )}
               <p className="mt-2 leading-7">
                 {reflection.summary || "Краткий итог не сформирован."}
               </p>

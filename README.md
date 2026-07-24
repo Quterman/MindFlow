@@ -1,11 +1,22 @@
 # MindFlow
 
 MindFlow is a reflection diary that turns a free-form daily entry into a
-concise summary, insights, and actionable next steps.
+concise summary, insights, actionable next steps, and recurring themes.
+
+The app uses Supabase for authentication and private per-user persistence.
+Reflection analysis runs on the server through OpenRouter and falls back to
+local rules if the AI provider is temporarily unavailable.
 
 ## Getting started
 
-Install dependencies and start the development server:
+Copy `.env.example` to `.env.local` and configure:
+
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
+- `OPENROUTER_API_KEY`
+- `OPENROUTER_MODEL`
+
+Then install dependencies and start the development server:
 
 ```bash
 npm install
@@ -21,6 +32,6 @@ npm run lint
 npm run build
 ```
 
-The current local version stores entries in an ignored SQLite database.
-The planned production setup will use Supabase for persistent storage and
-Vercel for hosting.
+The OpenRouter key is server-only and must never use a `NEXT_PUBLIC_` prefix.
+Apply the versioned SQL migrations in `supabase/migrations` before running code
+that depends on newly added database columns.

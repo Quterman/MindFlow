@@ -8,6 +8,9 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 35;
+
+const MAX_REFLECTION_LENGTH = 12_000;
 
 type RouteContext = {
   params: Promise<{ id: string }>;
@@ -101,9 +104,19 @@ export async function PATCH(request: Request, context: RouteContext) {
     return NextResponse.json({ reflection });
   }
 
-  if (typeof body.rawText !== "string" || body.rawText.trim().length < 8) {
+  if (
+    typeof body.rawText !== "string" ||
+    body.rawText.trim().length < 8 ||
+    body.rawText.length > MAX_REFLECTION_LENGTH
+  ) {
     return NextResponse.json(
-      { error: "Добавьте хотя бы одно осмысленное предложение." },
+      {
+        error:
+          typeof body.rawText === "string" &&
+          body.rawText.length > MAX_REFLECTION_LENGTH
+            ? "Запись слишком длинная. Сократите её до 12 000 символов."
+            : "Добавьте хотя бы одно осмысленное предложение.",
+      },
       { status: 400 },
     );
   }

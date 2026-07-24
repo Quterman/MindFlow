@@ -4,6 +4,9 @@ import { createReflection, listReflections } from "../../reflection-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 35;
+
+const MAX_REFLECTION_LENGTH = 12_000;
 
 export async function GET() {
   const user = await getAuthenticatedUser();
@@ -47,10 +50,16 @@ export async function POST(request: Request) {
     typeof body !== "object" ||
     Array.isArray(body) ||
     typeof body.rawText !== "string" ||
-    body.rawText.trim().length < 8
+    body.rawText.trim().length < 8 ||
+    body.rawText.length > MAX_REFLECTION_LENGTH
   ) {
     return NextResponse.json(
-      { error: "Добавьте хотя бы одно осмысленное предложение." },
+      {
+        error:
+          body?.rawText && body.rawText.length > MAX_REFLECTION_LENGTH
+            ? "Запись слишком длинная. Сократите её до 12 000 символов."
+            : "Добавьте хотя бы одно осмысленное предложение.",
+      },
       { status: 400 },
     );
   }
