@@ -1,6 +1,6 @@
 import type { ReflectionAnalysis } from "./reflection-analysis";
 
-export const REFLECTION_ANALYSIS_VERSION = "mindflow-reflection-v1";
+export const REFLECTION_ANALYSIS_VERSION = "mindflow-reflection-v2";
 
 export const reflectionAnalysisSchema = {
   type: "object",
@@ -36,7 +36,7 @@ export const reflectionAnalysisSchema = {
         maxLength: 400,
       },
       description:
-        "Наблюдения, которые прямо следуют из текущей записи, без диагнозов и домыслов.",
+        "Самостоятельные полезные выводы из текущей записи: связи, факторы влияния, противоречия или паттерны; не пересказ summary.",
     },
     todos: {
       type: "array",

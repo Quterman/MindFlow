@@ -7,6 +7,13 @@ import {
   useState,
   type RefObject,
 } from "react";
+import {
+  buildCalendarDates,
+  buildDaySummary,
+  buildPrimaryInsights,
+  groupDayActions,
+  shiftMonth,
+} from "./reflection-history";
 
 type Reflection = {
   id: string;
@@ -36,6 +43,11 @@ type DiaryView = "capture" | "today" | "history";
 type TodoError = {
   reflectionId: string;
   message: string;
+};
+
+type TodoTarget = {
+  reflectionId: string;
+  todo: string;
 };
 
 type SpeechRecognitionEventLike = {
@@ -293,50 +305,77 @@ export default function DiaryApp({
     }
   }
 
-  async function toggleTodo(
-    reflectionId: string,
-    todo: string,
-    completed: boolean,
-  ) {
-    const reflection = reflections.find((item) => item.id === reflectionId);
-    const todoKey = `${reflectionId}:${todo}`;
-    if (!reflection || updatingTodoKey) {
+  async function toggleTodos(targets: TodoTarget[], completed: boolean) {
+    const uniqueTargets = Array.from(
+      new Map(
+        targets.map((target) => [
+          `${target.reflectionId}:${target.todo}`,
+          target,
+        ]),
+      ).values(),
+    );
+    const updates = uniqueTargets.flatMap((target) => {
+      const reflection = reflections.find(
+        (item) => item.id === target.reflectionId,
+      );
+      if (!reflection) {
+        return [];
+      }
+
+      const completedTodos = completed
+        ? Array.from(new Set([...reflection.completedTodos, target.todo]))
+        : reflection.completedTodos.filter((item) => item !== target.todo);
+
+      return [{ reflection, completedTodos }];
+    });
+    if (updates.length === 0 || updatingTodoKey) {
       return;
     }
 
-    const completedTodos = completed
-      ? Array.from(new Set([...reflection.completedTodos, todo]))
-      : reflection.completedTodos.filter((item) => item !== todo);
-
-    setUpdatingTodoKey(todoKey);
+    setUpdatingTodoKey(
+      uniqueTargets
+        .map((target) => `${target.reflectionId}:${target.todo}`)
+        .join("|"),
+    );
     setTodoError(null);
 
-    try {
-      const response = await fetch(`/api/reflections/${reflection.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ completedTodos }),
-      });
+    const results = await Promise.allSettled(
+      updates.map(async ({ reflection, completedTodos }) => {
+        const response = await fetch(`/api/reflections/${reflection.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ completedTodos }),
+        });
 
-      if (!response.ok) {
-        throw new Error("Todo update failed");
-      }
+        if (!response.ok) {
+          throw new Error("Todo update failed");
+        }
 
-      const data = (await response.json()) as { reflection: Reflection };
-      setReflections((items) =>
-        items.map((item) =>
-          item.id === data.reflection.id ? data.reflection : item,
-        ),
+        return (await response.json()) as { reflection: Reflection };
+      }),
+    );
+    const updatedReflections = results.flatMap((result) =>
+      result.status === "fulfilled" ? [result.value.reflection] : [],
+    );
+
+    if (updatedReflections.length > 0) {
+      const updatedById = new Map(
+        updatedReflections.map((reflection) => [reflection.id, reflection]),
       );
-    } catch {
-      setTodoError({
-        reflectionId,
-        message:
-          "Не удалось сохранить статус действия. Отметка осталась без изменений.",
-      });
-    } finally {
-      setUpdatingTodoKey(null);
+      setReflections((items) =>
+        items.map((item) => updatedById.get(item.id) || item),
+      );
     }
+
+    if (results.some((result) => result.status === "rejected")) {
+      setTodoError({
+        reflectionId: updates[0].reflection.id,
+        message:
+          "Не удалось обновить действие во всех записях. Повторите попытку.",
+      });
+    }
+
+    setUpdatingTodoKey(null);
   }
 
   function toggleRecording() {
@@ -490,7 +529,7 @@ export default function DiaryApp({
             entries={todayReflections}
             onAddEntry={addAnotherEntry}
             onDelete={deleteReflection}
-            onToggleTodo={toggleTodo}
+            onToggleTodos={toggleTodos}
             resultHeadingRef={resultHeadingRef}
             savedReflectionId={savedReflectionId}
             todoError={todoError}
@@ -508,7 +547,7 @@ export default function DiaryApp({
             }}
             onDelete={deleteReflection}
             onOpenDate={openHistoryDate}
-            onToggleTodo={toggleTodo}
+            onToggleTodos={toggleTodos}
             resultHeadingRef={resultHeadingRef}
             savedReflectionId={savedReflectionId}
             selectedDate={selectedHistoryDate}
@@ -748,7 +787,7 @@ function TodayView({
   entries,
   onAddEntry,
   onDelete,
-  onToggleTodo,
+  onToggleTodos,
   resultHeadingRef,
   savedReflectionId,
   todoError,
@@ -757,11 +796,7 @@ function TodayView({
   entries: Reflection[];
   onAddEntry: () => void;
   onDelete: (reflectionId: string) => void;
-  onToggleTodo: (
-    reflectionId: string,
-    todo: string,
-    completed: boolean,
-  ) => void;
+  onToggleTodos: (targets: TodoTarget[], completed: boolean) => void;
   resultHeadingRef: RefObject<HTMLHeadingElement | null>;
   savedReflectionId: string | null;
   todoError: TodoError | null;
@@ -810,7 +845,7 @@ function TodayView({
         <DayOverview
           entries={entries}
           onDelete={onDelete}
-          onToggleTodo={onToggleTodo}
+          onToggleTodos={onToggleTodos}
           todoError={todoError}
           updatingTodoKey={updatingTodoKey}
         />
@@ -826,7 +861,7 @@ function HistoryView({
   onBack,
   onDelete,
   onOpenDate,
-  onToggleTodo,
+  onToggleTodos,
   resultHeadingRef,
   savedReflectionId,
   selectedDate,
@@ -837,17 +872,19 @@ function HistoryView({
   onBack: () => void;
   onDelete: (reflectionId: string) => void;
   onOpenDate: (date: string) => void;
-  onToggleTodo: (
-    reflectionId: string,
-    todo: string,
-    completed: boolean,
-  ) => void;
+  onToggleTodos: (targets: TodoTarget[], completed: boolean) => void;
   resultHeadingRef: RefObject<HTMLHeadingElement | null>;
   savedReflectionId: string | null;
   selectedDate: string | null;
   todoError: TodoError | null;
   updatingTodoKey: string | null;
 }) {
+  const historyDates = Object.keys(groupedByDate).sort((left, right) =>
+    right.localeCompare(left),
+  );
+  const [visibleMonth, setVisibleMonth] = useState(
+    (historyDates[0] || today()).slice(0, 7),
+  );
   const selectedEntries =
     selectedDate !== null ? groupedByDate[selectedDate] || [] : [];
   const hasFreshResult = selectedEntries.some(
@@ -870,7 +907,9 @@ function HistoryView({
         </header>
         <CompactHistory
           groupedByDate={groupedByDate}
+          onChangeMonth={setVisibleMonth}
           onSelect={onOpenDate}
+          visibleMonth={visibleMonth}
         />
       </>
     );
@@ -878,7 +917,7 @@ function HistoryView({
 
   return (
     <>
-      <header className="rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/86 p-5 shadow-[0_18px_55px_rgba(57,37,20,0.07)]">
+      <header className="rounded-[2rem] border border-[#3a2a1d]/8 bg-[#fffaf1]/70 px-5 py-5 shadow-[0_12px_38px_rgba(57,37,20,0.04)] sm:px-7">
         <button
           className="rounded-full border border-[#3a2a1d]/10 px-4 py-2 text-sm font-black text-[#7a4a1d] transition hover:bg-[#3a2a1d]/5"
           onClick={onBack}
@@ -886,11 +925,11 @@ function HistoryView({
         >
           ← Назад к дням
         </button>
-        <p className="mt-5 text-sm font-bold uppercase tracking-[0.12em] text-[#8b5a22]">
+        <p className="mt-5 text-xs font-black uppercase tracking-[0.14em] text-[#8b7868]">
           Сохранённый день
         </p>
         <h1
-          className="mt-2 scroll-mt-24 font-serif-display text-4xl font-black leading-none tracking-[-0.06em] outline-none focus-visible:ring-2 focus-visible:ring-[#a96214] focus-visible:ring-offset-4 sm:text-5xl"
+          className="mt-2 scroll-mt-24 font-serif-display text-4xl font-black leading-none tracking-[-0.055em] outline-none focus-visible:ring-2 focus-visible:ring-[#a96214] focus-visible:ring-offset-4 sm:text-[2.65rem]"
           ref={hasFreshResult ? resultHeadingRef : undefined}
           tabIndex={hasFreshResult ? -1 : undefined}
         >
@@ -910,7 +949,7 @@ function HistoryView({
         <DayOverview
           entries={selectedEntries}
           onDelete={onDelete}
-          onToggleTodo={onToggleTodo}
+          onToggleTodos={onToggleTodos}
           todoError={todoError}
           updatingTodoKey={updatingTodoKey}
         />
@@ -926,106 +965,107 @@ function HistoryView({
 function DayOverview({
   entries,
   onDelete,
-  onToggleTodo,
+  onToggleTodos,
   todoError,
   updatingTodoKey,
 }: {
   entries: Reflection[];
   onDelete: (reflectionId: string) => void;
-  onToggleTodo: (
-    reflectionId: string,
-    todo: string,
-    completed: boolean,
-  ) => void;
+  onToggleTodos: (targets: TodoTarget[], completed: boolean) => void;
   todoError: TodoError | null;
   updatingTodoKey: string | null;
 }) {
-  const insights = Array.from(
-    new Set(entries.flatMap((reflection) => reflection.insights)),
-  );
-  const actions = entries.flatMap((reflection) =>
-    reflection.todos.map((todo) => ({ reflection, todo })),
-  );
+  const primaryInsights = buildPrimaryInsights(entries);
+  const actions = groupDayActions(entries);
 
   return (
-    <section className="grid gap-5 rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/88 p-5 shadow-[0_18px_55px_rgba(57,37,20,0.07)]">
-      <div>
-        <p className="text-sm font-black uppercase tracking-[0.12em] text-[#8b5a22]">
+    <section className="grid gap-8 rounded-[2rem] border border-[#3a2a1d]/8 bg-[#fffaf1]/72 px-5 py-6 shadow-[0_14px_42px_rgba(57,37,20,0.045)] sm:px-7 sm:py-8">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#3a2a1d]/8 pb-5">
+        <p className="font-serif-display text-2xl font-black tracking-[-0.04em]">
           Итог дня
         </p>
-        <p className="mt-2 text-sm leading-6 text-[#6c5b4d]">
+        <p className="rounded-full bg-[#efe5d5] px-3 py-1.5 text-sm font-bold text-[#6c5b4d]">
           {entries.length} {pluralize(entries.length, "запись", "записи", "записей")}
         </p>
       </div>
 
-      <section>
-        <h2 className="mb-3 text-sm font-black uppercase tracking-[0.12em] text-[#8b5a22]">
-          Коротко
+      <section aria-labelledby="primary-insights-heading">
+        <p className="text-xs font-black uppercase tracking-[0.14em] text-[#a96214]">
+          Что стоит забрать с собой
+        </p>
+        <h2
+          className="mt-2 font-serif-display text-3xl font-black tracking-[-0.05em]"
+          id="primary-insights-heading"
+        >
+          Основные инсайты
         </h2>
-        <div className="grid gap-2">
-          {entries.map((reflection, index) => (
-            <article
-              className="rounded-2xl border border-[#3a2a1d]/8 bg-white/62 p-4"
-              key={reflection.id}
-            >
-              <p className="text-xs font-black uppercase tracking-[0.1em] text-[#a96214]">
-                Запись {entries.length - index} · {formatTime(reflection.createdAt)}
-              </p>
-              {reflection.analysisSource === "fallback" && (
-                <p className="mt-2 inline-flex rounded-full bg-[#efe0c8] px-2.5 py-1 text-xs font-bold text-[#7a4a1d]">
-                  Базовый разбор
-                </p>
-              )}
-              <p className="mt-2 leading-7">
-                {reflection.summary || "Краткий итог не сформирован."}
-              </p>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section>
-        <h2 className="mb-3 text-sm font-black uppercase tracking-[0.12em] text-[#8b5a22]">
-          Инсайты дня
-        </h2>
-        {insights.length > 0 ? (
-          <ul className="grid gap-2">
-            {insights.map((insight) => (
-              <li className="rounded-2xl bg-white/58 p-4 leading-7" key={insight}>
-                {insight}
+        {primaryInsights.length > 0 ? (
+          <ol className="mt-5 grid gap-3">
+            {primaryInsights.map((insight, index) => (
+              <li
+                className="grid grid-cols-[auto_1fr] gap-3 border-b border-[#3a2a1d]/8 pb-4 leading-7 last:border-0 last:pb-0"
+                key={insight}
+              >
+                <span
+                  aria-hidden="true"
+                  className="mt-0.5 grid h-7 w-7 place-items-center rounded-full bg-[#d58b22] text-xs font-black text-white"
+                >
+                  {index + 1}
+                </span>
+                <span>{insight}</span>
               </li>
             ))}
-          </ul>
+          </ol>
         ) : (
-          <p className="rounded-2xl bg-white/58 p-4 text-[#6c5b4d]">
-            Отдельные инсайты пока не сформированы.
+          <p className="mt-4 leading-7 text-[#6c5b4d]">
+            Значимые инсайты пока не сформированы.
           </p>
         )}
       </section>
 
-      <section>
-        <h2 className="mb-3 text-sm font-black uppercase tracking-[0.12em] text-[#8b5a22]">
-          Действия дня
+      <section
+        aria-labelledby="day-actions-heading"
+        className="rounded-3xl bg-[#e7ede2]/72 p-5"
+      >
+        <p className="text-xs font-black uppercase tracking-[0.14em] text-[#56704f]">
+          Практический фокус
+        </p>
+        <h2
+          className="mt-2 font-serif-display text-2xl font-black tracking-[-0.04em]"
+          id="day-actions-heading"
+        >
+          Следующие шаги
         </h2>
         {actions.length > 0 ? (
-          <ul className="grid gap-2">
-            {actions.map(({ reflection, todo }) => {
-              const isCompleted = reflection.completedTodos.includes(todo);
-              const todoKey = `${reflection.id}:${todo}`;
+          <ul className="mt-4 grid gap-2">
+            {actions.map((action) => {
+              const isCompleted = action.sources.every(
+                (source) => source.completed,
+              );
+              const completedCount = action.sources.filter(
+                (source) => source.completed,
+              ).length;
+              const targets = action.sources.map((source) => ({
+                reflectionId: source.reflectionId,
+                todo: source.todo,
+              }));
               return (
-                <li className="rounded-2xl bg-white/58 p-4" key={todoKey}>
+                <li
+                  className="rounded-2xl bg-white/70 px-4 py-3"
+                  key={action.todo}
+                >
                   <label className="flex cursor-pointer items-start gap-3">
                     <input
-                      aria-label={`${isCompleted ? "Отметить невыполненным" : "Отметить выполненным"}: ${todo}`}
+                      aria-label={`${isCompleted ? "Отметить невыполненным" : "Отметить выполненным"}: ${action.todo}`}
                       checked={isCompleted}
-                      className="mt-1 h-5 w-5 shrink-0 accent-[#8b5a22]"
+                      className="mt-1 h-5 w-5 shrink-0 accent-[#56704f]"
                       disabled={updatingTodoKey !== null}
                       onChange={(event) =>
-                        onToggleTodo(reflection.id, todo, event.target.checked)
+                        onToggleTodos(targets, event.target.checked)
                       }
                       type="checkbox"
                     />
-                    <span>
+                    <span className="min-w-0">
                       <span
                         className={
                           isCompleted
@@ -1033,10 +1073,12 @@ function DayOverview({
                             : "block leading-7"
                         }
                       >
-                        {todo}
+                        {action.todo}
                       </span>
-                      <span className="mt-1 block text-xs font-bold text-[#8b5a22]">
-                        {formatTime(reflection.createdAt)}
+                      <span className="mt-1 block text-xs font-bold text-[#56704f]">
+                        {action.sources.length > 1
+                          ? `Из ${action.sources.length} записей · выполнено ${completedCount}`
+                          : formatTime(action.sources[0].createdAt)}
                       </span>
                     </span>
                   </label>
@@ -1045,7 +1087,7 @@ function DayOverview({
             })}
           </ul>
         ) : (
-          <p className="rounded-2xl bg-white/58 p-4 text-[#6c5b4d]">
+          <p className="mt-4 leading-7 text-[#6c5b4d]">
             Конкретных шагов к действию в записях этого дня не найдено.
           </p>
         )}
@@ -1061,25 +1103,28 @@ function DayOverview({
       </section>
 
       <section>
-        <h2 className="mb-3 text-sm font-black uppercase tracking-[0.12em] text-[#8b5a22]">
-          Отдельные записи
+        <p className="text-xs font-black uppercase tracking-[0.14em] text-[#8b7868]">
+          Контекст и детали
+        </p>
+        <h2 className="mt-2 font-serif-display text-2xl font-black tracking-[-0.04em]">
+          Записи дня
         </h2>
-        <div className="grid gap-3">
+        <div className="mt-4 divide-y divide-[#3a2a1d]/8 border-y border-[#3a2a1d]/8">
           {entries.map((reflection) => (
             <details
-              className="group rounded-3xl border border-[#3a2a1d]/8 bg-white/48 p-4"
+              className="group py-4"
               key={reflection.id}
             >
               <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
-                <span>
-                  <span className="block font-black">
+                <span className="min-w-0">
+                  <span className="block text-sm font-black text-[#8b5a22]">
                     {formatTime(reflection.createdAt)}
                   </span>
-                  <span className="mt-1 line-clamp-1 block text-sm text-[#6c5b4d]">
-                    {reflection.summary}
+                  <span className="mt-1 line-clamp-2 block leading-6 text-[#6c5b4d]">
+                    {reflection.summary || "Краткий итог не сформирован."}
                   </span>
                 </span>
-                <span className="text-2xl leading-none transition group-open:rotate-45">
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[#efe5d5] text-xl leading-none transition group-open:rotate-45">
                   +
                 </span>
               </summary>
@@ -1175,11 +1220,11 @@ function SessionDetails({ reflection }: { reflection: Reflection }) {
         </div>
       </section>
 
-      <section className="rounded-3xl border border-[#3a2a1d]/8 bg-white/42 p-4">
+      <section className="border-t border-[#3a2a1d]/8 pt-4">
         <h3 className="text-sm font-black uppercase tracking-[0.12em] text-[#8b5a22]">
           Исходная запись
         </h3>
-        <div className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap rounded-2xl bg-[#fffaf1]/76 p-4 leading-7 text-[#3a2a1d]">
+        <div className="mt-3 whitespace-pre-wrap leading-7 text-[#3a2a1d] sm:max-h-80 sm:overflow-auto sm:pr-3">
           {reflection.rawText}
         </div>
       </section>
@@ -1202,103 +1247,236 @@ function EmptyDay() {
 
 function CompactHistory({
   groupedByDate,
+  onChangeMonth,
   onSelect,
+  visibleMonth,
 }: {
   groupedByDate: Record<string, Reflection[]>;
+  onChangeMonth: (month: string) => void;
   onSelect: (date: string) => void;
+  visibleMonth: string;
 }) {
   const days = Object.entries(groupedByDate).sort(([dateA], [dateB]) =>
     dateB.localeCompare(dateA),
   );
+  const recentDays = days.slice(0, 6);
 
   return (
-    <section className="rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/78 p-5 shadow-[0_14px_46px_rgba(57,37,20,0.055)]">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 className="font-serif-display text-3xl font-black tracking-[-0.05em]">
-            История записей
-          </h2>
-          <p className="mt-2 text-sm leading-6 text-[#6c5b4d]">
-            Откройте день, чтобы посмотреть только его разбор без поля новой записи.
+    <div className="grid gap-5">
+      <HistoryCalendar
+        groupedByDate={groupedByDate}
+        onChangeMonth={onChangeMonth}
+        onSelect={onSelect}
+        visibleMonth={visibleMonth}
+      />
+
+      <section className="rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/78 p-5 shadow-[0_14px_46px_rgba(57,37,20,0.055)]">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="font-serif-display text-3xl font-black tracking-[-0.05em]">
+              Последние дни
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-[#6c5b4d]">
+              Быстрый доступ к недавним итогам без выбора даты в календаре.
+            </p>
+          </div>
+          <span className="rounded-full bg-[#efe0c8] px-3 py-2 text-sm font-bold text-[#7a4a1d]">
+            {days.length} дн.
+          </span>
+        </div>
+
+        <div className="mt-4 grid gap-3">
+          {recentDays.map(([date, items]) => {
+            const insightsCount = items.reduce(
+              (sum, item) => sum + item.insights.length,
+              0,
+            );
+            const repeatsCount = items.reduce(
+              (sum, item) => sum + item.repeats.length,
+              0,
+            );
+            const todosCount = items.reduce(
+              (sum, item) => sum + item.todos.length,
+              0,
+            );
+            const themes = Array.from(
+              new Set(items.flatMap((item) => item.themes)),
+            ).slice(0, 4);
+
+            return (
+              <button
+                className="rounded-3xl border border-[#3a2a1d]/8 bg-white/58 p-4 text-left text-[#3a2a1d] transition hover:-translate-y-0.5 hover:bg-white"
+                key={date}
+                onClick={() => onSelect(date)}
+                type="button"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-black uppercase tracking-[0.12em] text-[#8b5a22]">
+                      {formatDate(date)}
+                    </p>
+                    <p className="mt-2 line-clamp-2 text-base font-black leading-6">
+                      {buildDaySummary(items)}
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-[#efe0c8] px-3 py-2 text-xs font-black">
+                    Открыть день
+                  </span>
+                </div>
+
+                <div className="mt-4 grid grid-cols-3 gap-2 text-center text-sm">
+                  <span className="rounded-2xl bg-[#fffaf1] px-3 py-2">
+                    <b>{insightsCount}</b>
+                    <span className="block text-xs opacity-65">инсайта</span>
+                  </span>
+                  <span className="rounded-2xl bg-[#fffaf1] px-3 py-2">
+                    <b>{repeatsCount}</b>
+                    <span className="block text-xs opacity-65">зон</span>
+                  </span>
+                  <span className="rounded-2xl bg-[#fffaf1] px-3 py-2">
+                    <b>{todosCount}</b>
+                    <span className="block text-xs opacity-65">действий</span>
+                  </span>
+                </div>
+
+                {themes.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {themes.map((theme) => (
+                      <span
+                        className="rounded-full bg-[#ede0c9] px-3 py-1 text-xs font-bold text-[#4a3828]"
+                        key={theme}
+                      >
+                        {theme}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </button>
+            );
+          })}
+          {recentDays.length === 0 && (
+            <p className="rounded-3xl bg-white/58 p-5 text-center text-[#6c5b4d]">
+              История появится после первой записи.
+            </p>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function HistoryCalendar({
+  groupedByDate,
+  onChangeMonth,
+  onSelect,
+  visibleMonth,
+}: {
+  groupedByDate: Record<string, Reflection[]>;
+  onChangeMonth: (month: string) => void;
+  onSelect: (date: string) => void;
+  visibleMonth: string;
+}) {
+  const dates = buildCalendarDates(visibleMonth);
+  const [year, month] = visibleMonth.split("-").map(Number);
+  const monthLabel = new Intl.DateTimeFormat("ru", {
+    month: "long",
+    year: "numeric",
+  }).format(new Date(year, month - 1, 1));
+  const markedDays = dates.filter(
+    (date): date is string => Boolean(date && groupedByDate[date]?.length),
+  ).length;
+
+  return (
+    <section className="rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/86 p-4 shadow-[0_14px_46px_rgba(57,37,20,0.055)] sm:p-5">
+      <div className="flex items-center justify-between gap-3">
+        <button
+          aria-label="Предыдущий месяц"
+          className="grid h-11 w-11 shrink-0 place-items-center rounded-full border border-[#3a2a1d]/10 bg-white/58 text-xl font-black text-[#7a4a1d] transition hover:bg-white"
+          onClick={() => onChangeMonth(shiftMonth(visibleMonth, -1))}
+          type="button"
+        >
+          ←
+        </button>
+        <div className="min-w-0 text-center">
+          <p className="font-serif-display text-2xl font-black capitalize tracking-[-0.04em]">
+            {monthLabel}
+          </p>
+          <p className="mt-1 text-xs font-bold text-[#6c5b4d]">
+            {markedDays > 0
+              ? `${markedDays} ${pluralize(markedDays, "день с записями", "дня с записями", "дней с записями")}`
+              : "В этом месяце записей нет"}
           </p>
         </div>
-        <span className="rounded-full bg-[#efe0c8] px-3 py-2 text-sm font-bold text-[#7a4a1d]">
-          {days.length} дн.
-        </span>
+        <button
+          aria-label="Следующий месяц"
+          className="grid h-11 w-11 shrink-0 place-items-center rounded-full border border-[#3a2a1d]/10 bg-white/58 text-xl font-black text-[#7a4a1d] transition hover:bg-white"
+          onClick={() => onChangeMonth(shiftMonth(visibleMonth, 1))}
+          type="button"
+        >
+          →
+        </button>
       </div>
 
-      <div className="mt-4 grid gap-3">
-        {days.map(([date, items]) => {
-          const primary = items[0];
-          const insightsCount = items.reduce(
-            (sum, item) => sum + item.insights.length,
-            0,
-          );
-          const repeatsCount = items.reduce(
-            (sum, item) => sum + item.repeats.length,
-            0,
-          );
-          const todosCount = items.reduce((sum, item) => sum + item.todos.length, 0);
-          const themes = Array.from(
-            new Set(items.flatMap((item) => item.themes)),
-          ).slice(0, 4);
+      <div
+        aria-label={`Календарь за ${monthLabel}`}
+        className="mt-5 grid grid-cols-7 gap-1.5"
+        role="grid"
+      >
+        {["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((weekday) => (
+          <span
+            className="pb-1 text-center text-[0.68rem] font-black uppercase tracking-[0.08em] text-[#8b7868]"
+            key={weekday}
+            role="columnheader"
+          >
+            {weekday}
+          </span>
+        ))}
+
+        {dates.map((date, index) => {
+          if (!date) {
+            return (
+              <span
+                aria-hidden="true"
+                className="aspect-square min-h-10"
+                key={`empty-${index}`}
+                role="gridcell"
+              />
+            );
+          }
+
+          const entriesCount = groupedByDate[date]?.length || 0;
+          const dayNumber = Number(date.slice(-2));
+          const isToday = date === today();
 
           return (
-            <button
-              className="rounded-3xl border border-[#3a2a1d]/8 bg-white/58 p-4 text-left text-[#3a2a1d] transition hover:-translate-y-0.5 hover:bg-white"
-              key={date}
-              onClick={() => onSelect(date)}
-              type="button"
-            >
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <p className="text-sm font-black uppercase tracking-[0.12em] text-[#8b5a22]">
-                    {formatDate(date)}
-                  </p>
-                  <p className="mt-2 line-clamp-2 text-base font-black leading-6">
-                    {primary.insights[0] || primary.summary}
-                  </p>
-                </div>
-                <span className="rounded-full bg-[#efe0c8] px-3 py-2 text-xs font-black">
-                  Открыть день
+            <span className="aspect-square min-h-10" key={date} role="gridcell">
+              {entriesCount > 0 ? (
+                <button
+                  aria-label={`${formatDate(date)}: ${entriesCount} ${pluralize(entriesCount, "запись", "записи", "записей")}`}
+                  className={`relative grid h-full w-full place-items-center rounded-2xl bg-[#221a13] text-sm font-black text-[#fff4df] shadow-[0_7px_18px_rgba(34,26,19,0.14)] transition hover:-translate-y-0.5 hover:bg-[#3b2b1d] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a96214] focus-visible:ring-offset-2 ${
+                    isToday ? "ring-2 ring-[#d58b22] ring-offset-2" : ""
+                  }`}
+                  onClick={() => onSelect(date)}
+                  type="button"
+                >
+                  {dayNumber}
+                  <span className="absolute right-1 top-1 grid min-h-4 min-w-4 place-items-center rounded-full bg-[#d58b22] px-1 text-[0.6rem] leading-none text-white">
+                    {entriesCount}
+                  </span>
+                </button>
+              ) : (
+                <span
+                  aria-label={formatDate(date)}
+                  className={`grid h-full w-full place-items-center rounded-2xl text-sm font-bold text-[#8b7868] ${
+                    isToday ? "bg-[#efe0c8] text-[#7a4a1d]" : ""
+                  }`}
+                >
+                  {dayNumber}
                 </span>
-              </div>
-
-              <div className="mt-4 grid grid-cols-3 gap-2 text-center text-sm">
-                <span className="rounded-2xl bg-[#fffaf1] px-3 py-2">
-                  <b>{insightsCount}</b>
-                  <span className="block text-xs opacity-65">инсайта</span>
-                </span>
-                <span className="rounded-2xl bg-[#fffaf1] px-3 py-2">
-                  <b>{repeatsCount}</b>
-                  <span className="block text-xs opacity-65">зон</span>
-                </span>
-                <span className="rounded-2xl bg-[#fffaf1] px-3 py-2">
-                  <b>{todosCount}</b>
-                  <span className="block text-xs opacity-65">действий</span>
-                </span>
-              </div>
-
-              {themes.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {themes.map((theme) => (
-                    <span
-                      className="rounded-full bg-[#ede0c9] px-3 py-1 text-xs font-bold text-[#4a3828]"
-                      key={theme}
-                    >
-                      {theme}
-                    </span>
-                  ))}
-                </div>
               )}
-            </button>
+            </span>
           );
         })}
-        {days.length === 0 && (
-          <p className="rounded-3xl bg-white/58 p-5 text-center text-[#6c5b4d]">
-            История появится после первой записи.
-          </p>
-        )}
       </div>
     </section>
   );

@@ -92,3 +92,14 @@ test("limits historical context to earlier entries and fifteen records", () => {
     payload.previousEntries.every((entry) => entry.text.length <= 2_000),
   );
 });
+
+test("asks the model for insights instead of a summary retelling", () => {
+  const { messages } = buildReflectionAnalysisMessages({
+    rawText: "Сегодня заметил, что откладываю старт, когда задача неясна.",
+    entryDate: "2026-07-24",
+    previous: [],
+  });
+
+  assert.match(messages[0].content, /Инсайты — это не пересказ/);
+  assert.match(messages[0].content, /полезную для автора связь/);
+});
