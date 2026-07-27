@@ -8,6 +8,7 @@ export type DaySummaryReflection = {
 
 export type DayActionReflection = {
   id: string;
+  entryDate: string;
   createdAt: string;
   todos: string[];
   completedTodos: string[];
@@ -17,10 +18,51 @@ export type GroupedDayAction = {
   todo: string;
   sources: Array<{
     reflectionId: string;
+    entryDate: string;
     createdAt: string;
     todo: string;
     completed: boolean;
   }>;
+};
+
+export type OverviewReflection = DaySummaryReflection &
+  DayActionReflection & {
+    repeats: Array<{
+      title: string;
+      description: string;
+      previousDate: string;
+    }>;
+  };
+
+export type OverviewPattern = {
+  title: string;
+  description: string;
+  dates: string[];
+  latestDate: string;
+};
+
+export type OverviewLeadStory = {
+  pattern: OverviewPattern;
+  action: GroupedDayAction | null;
+};
+
+export type OverviewSnapshot = {
+  latestEntryDate: string | null;
+  daysSinceLatestEntry: number | null;
+  isStale: boolean;
+  leadStory: OverviewLeadStory | null;
+  primaryInsights: Array<{
+    text: string;
+    entryDate: string;
+  }>;
+  openActions: GroupedDayAction[];
+  patterns: OverviewPattern[];
+  week: {
+    entries: number;
+    activeDays: number;
+    actions: number;
+    completedActions: number;
+  };
 };
 
 export function buildDaySummary(entries: DaySummaryReflection[]) {
@@ -106,6 +148,32 @@ export function buildPrimaryInsights(
   }, []);
 }
 
+export function buildImportantEntryInsights(
+  entry: Pick<OverviewReflection, "insights" | "repeats">,
+) {
+  const candidates = buildPrimaryInsights(
+    [{ insights: entry.insights }],
+    Math.max(entry.insights.length, 1),
+  ).filter(
+    (insight) => !isGenericInsight(insight) && scoreInsight(insight) >= 3.5,
+  );
+  const representedPatterns = new Set<number>();
+
+  return candidates.filter((insight) => {
+    const relatedPatternIndex = entry.repeats.findIndex((repeat) =>
+      isInsightRelatedToPattern(insight, repeat),
+    );
+    if (relatedPatternIndex < 0) {
+      return true;
+    }
+    if (representedPatterns.has(relatedPatternIndex)) {
+      return false;
+    }
+    representedPatterns.add(relatedPatternIndex);
+    return true;
+  });
+}
+
 export function groupDayActions(entries: DayActionReflection[]) {
   const groups = new Map<
     string,
@@ -127,6 +195,7 @@ export function groupDayActions(entries: DayActionReflection[]) {
       };
       current.sources.push({
         reflectionId: entry.id,
+        entryDate: entry.entryDate,
         createdAt: entry.createdAt,
         todo,
         completed: entry.completedTodos.some(
@@ -144,6 +213,84 @@ export function groupDayActions(entries: DayActionReflection[]) {
       todo: group.todo,
       sources: group.sources,
     }));
+}
+
+export function buildOverviewSnapshot(
+  entries: OverviewReflection[],
+  currentDate: string,
+): OverviewSnapshot {
+  const availableEntries = entries.filter(
+    (entry) => entry.entryDate <= currentDate,
+  );
+  const todayEntries = availableEntries.filter(
+    (entry) => entry.entryDate === currentDate,
+  );
+  const insightEntries =
+    todayEntries.length > 0 ? todayEntries : availableEntries;
+  const primaryInsightTexts = buildPrimaryInsights(insightEntries, 3);
+  const primaryInsights = primaryInsightTexts.flatMap((text) => {
+    const source = insightEntries.find((entry) =>
+      entry.insights.some(
+        (insight) => normalizeText(insight) === normalizeText(text),
+      ),
+    );
+
+    return source ? [{ text, entryDate: source.entryDate }] : [];
+  });
+  const openActions = groupDayActions(availableEntries)
+    .filter((action) => !action.sources.every((source) => source.completed))
+    .slice(0, 5);
+  const patterns = buildOverviewPatterns(availableEntries).slice(0, 3);
+  const leadPattern = patterns[0] || null;
+  const leadAction = leadPattern
+    ? openActions.find((action) =>
+        action.sources.some(
+          (source) => source.entryDate === leadPattern.latestDate,
+        ),
+      ) || null
+    : null;
+  const leadStory = leadPattern
+    ? {
+        pattern: leadPattern,
+        action: leadAction,
+      }
+    : null;
+  const latestEntryDate =
+    availableEntries.reduce<string | null>(
+      (latest, entry) =>
+        !latest || entry.entryDate > latest ? entry.entryDate : latest,
+      null,
+    );
+  const daysSinceLatestEntry = latestEntryDate
+    ? differenceInCalendarDays(currentDate, latestEntryDate)
+    : null;
+  const weekStart = shiftDate(currentDate, -6);
+  const weekEntries = availableEntries.filter(
+    (entry) => entry.entryDate >= weekStart && entry.entryDate <= currentDate,
+  );
+  const weekActions = groupDayActions(weekEntries);
+
+  return {
+    latestEntryDate,
+    daysSinceLatestEntry,
+    isStale: daysSinceLatestEntry !== null && daysSinceLatestEntry >= 7,
+    leadStory,
+    primaryInsights: primaryInsights.filter(
+      (insight) =>
+        (!leadPattern ||
+          !isInsightRelatedToPattern(insight.text, leadPattern)),
+    ),
+    openActions: openActions.filter((action) => action !== leadAction),
+    patterns: patterns.filter((pattern) => pattern !== leadPattern),
+    week: {
+      entries: weekEntries.length,
+      activeDays: new Set(weekEntries.map((entry) => entry.entryDate)).size,
+      actions: weekActions.length,
+      completedActions: weekActions.filter((action) =>
+        action.sources.every((source) => source.completed),
+      ).length,
+    },
+  };
 }
 
 export function buildCalendarDates(monthKey: string) {
@@ -183,6 +330,63 @@ export function shiftMonth(monthKey: string, offset: number) {
 
   const shifted = new Date(Number(match[1]), Number(match[2]) - 1 + offset, 1);
   return `${shifted.getFullYear()}-${String(shifted.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function buildOverviewPatterns(entries: OverviewReflection[]) {
+  const patterns = new Map<string, OverviewPattern>();
+
+  for (const entry of entries) {
+    for (const repeat of entry.repeats) {
+      const normalizedTitle = normalizeText(repeat.title);
+      if (!normalizedTitle) {
+        continue;
+      }
+
+      const current = patterns.get(normalizedTitle) || {
+        title: repeat.title.trim(),
+        description: repeat.description.trim(),
+        dates: [],
+        latestDate: entry.entryDate,
+      };
+      current.dates = Array.from(
+        new Set([...current.dates, repeat.previousDate, entry.entryDate]),
+      ).sort();
+
+      if (entry.entryDate >= current.latestDate) {
+        current.title = repeat.title.trim();
+        current.description = repeat.description.trim();
+        current.latestDate = entry.entryDate;
+      }
+      patterns.set(normalizedTitle, current);
+    }
+  }
+
+  return [...patterns.values()]
+    .sort(
+      (left, right) =>
+        right.latestDate.localeCompare(left.latestDate) ||
+        right.dates.length - left.dates.length,
+    );
+}
+
+function shiftDate(date: string, offset: number) {
+  const shifted = new Date(`${date}T12:00:00`);
+  shifted.setDate(shifted.getDate() + offset);
+  const year = shifted.getFullYear();
+  const month = String(shifted.getMonth() + 1).padStart(2, "0");
+  const day = String(shifted.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function differenceInCalendarDays(laterDate: string, earlierDate: string) {
+  const later = parseDateAsUtc(laterDate);
+  const earlier = parseDateAsUtc(earlierDate);
+  return Math.max(0, Math.round((later - earlier) / 86_400_000));
+}
+
+function parseDateAsUtc(date: string) {
+  const [year, month, day] = date.split("-").map(Number);
+  return Date.UTC(year, month - 1, day);
 }
 
 function rankThemes(entries: DaySummaryReflection[]) {
@@ -286,6 +490,30 @@ function significantWords(value: string) {
       .replace(/[^\p{L}\p{N}\s]/gu, " ")
       .split(/\s+/)
       .filter((word) => word.length >= 5 && !stopWords.has(word)),
+  );
+}
+
+function isInsightRelatedToPattern(
+  insight: string,
+  pattern: Pick<OverviewPattern, "title" | "description">,
+) {
+  const patternStems = significantWordStems(
+    `${pattern.title} ${pattern.description}`,
+  );
+  const insightStems = significantWordStems(insight);
+  const sharedStems = [...insightStems].filter((stem) =>
+    patternStems.has(stem),
+  );
+  return sharedStems.length >= 2;
+}
+
+function significantWordStems(value: string) {
+  return new Set(
+    normalizeText(value)
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .split(/\s+/)
+      .filter((word) => word.length >= 5)
+      .map((word) => word.slice(0, 5)),
   );
 }
 

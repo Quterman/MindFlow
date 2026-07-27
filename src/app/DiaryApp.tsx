@@ -10,6 +10,8 @@ import {
 import {
   buildCalendarDates,
   buildDaySummary,
+  buildImportantEntryInsights,
+  buildOverviewSnapshot,
   buildPrimaryInsights,
   groupDayActions,
   shiftMonth,
@@ -38,7 +40,7 @@ type Reflection = {
   updatedAt: string;
 };
 
-type DiaryView = "capture" | "today" | "history";
+type DiaryView = "overview" | "capture" | "history";
 
 type TodoError = {
   reflectionId: string;
@@ -92,7 +94,7 @@ export default function DiaryApp({
   const [entryDate, setEntryDate] = useState(today());
   const [isSaving, setIsSaving] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
-  const [activeView, setActiveView] = useState<DiaryView>("capture");
+  const [activeView, setActiveView] = useState<DiaryView>("overview");
   const [selectedHistoryDate, setSelectedHistoryDate] = useState<string | null>(
     null,
   );
@@ -132,7 +134,6 @@ export default function DiaryApp({
     }, {});
   }, [reflections]);
 
-  const todayReflections = groupedByDate[today()] || [];
   const latestReflection = reflections[0] || null;
 
   async function saveReflection() {
@@ -177,7 +178,7 @@ export default function DiaryApp({
       setReflections((items) => [data.reflection, ...items]);
       setSavedReflectionId(data.reflection.id);
       if (data.reflection.entryDate === today()) {
-        setActiveView("today");
+        setActiveView("overview");
         setSelectedHistoryDate(null);
       } else {
         setActiveView("history");
@@ -511,11 +512,7 @@ export default function DiaryApp({
               setFieldError("");
             }}
             onOpenLatest={(reflection) => {
-              if (reflection.entryDate === today()) {
-                changeView("today");
-              } else {
-                openHistoryDate(reflection.entryDate);
-              }
+              openHistoryDate(reflection.entryDate);
             }}
             onSave={saveReflection}
             onToggleRecording={toggleRecording}
@@ -524,16 +521,14 @@ export default function DiaryApp({
           />
         )}
 
-        {activeView === "today" && (
-          <TodayView
-            entries={todayReflections}
+        {activeView === "overview" && (
+          <OverviewView
+            entries={reflections}
             onAddEntry={addAnotherEntry}
-            onDelete={deleteReflection}
-            onToggleTodos={toggleTodos}
+            onOpenHistory={() => changeView("history")}
+            onOpenDate={openHistoryDate}
             resultHeadingRef={resultHeadingRef}
             savedReflectionId={savedReflectionId}
-            todoError={todoError}
-            updatingTodoKey={updatingTodoKey}
           />
         )}
 
@@ -581,8 +576,8 @@ function DiaryNavigation({
   onChange: (view: DiaryView) => void;
 }) {
   const items: Array<{ id: DiaryView; label: string }> = [
-    { id: "capture", label: "Запись" },
-    { id: "today", label: "Сегодня" },
+    { id: "overview", label: "Обзор" },
+    { id: "capture", label: "Записать" },
     { id: "history", label: "История" },
   ];
 
@@ -608,8 +603,12 @@ function DiaryNavigation({
               aria-current={isActive ? "page" : undefined}
               className={`rounded-full px-3 py-3 text-sm font-black transition ${
                 isActive
-                  ? "bg-[#221a13] text-[#fff4df]"
-                  : "text-[#6c5b4d] hover:bg-[#3a2a1d]/5"
+                  ? item.id === "capture"
+                    ? "bg-[#d58b22] text-white shadow-[0_8px_20px_rgba(169,98,20,0.24)]"
+                    : "bg-[#221a13] text-[#fff4df]"
+                  : item.id === "capture"
+                    ? "bg-[#d58b22] text-white shadow-[0_8px_20px_rgba(169,98,20,0.22)] hover:bg-[#bd741c]"
+                    : "text-[#6c5b4d] hover:bg-[#3a2a1d]/5"
               }`}
               key={item.id}
               disabled={disabled}
@@ -783,76 +782,211 @@ function CaptureView({
   );
 }
 
-function TodayView({
+function OverviewView({
   entries,
   onAddEntry,
-  onDelete,
-  onToggleTodos,
+  onOpenHistory,
+  onOpenDate,
   resultHeadingRef,
   savedReflectionId,
-  todoError,
-  updatingTodoKey,
 }: {
   entries: Reflection[];
   onAddEntry: () => void;
-  onDelete: (reflectionId: string) => void;
-  onToggleTodos: (targets: TodoTarget[], completed: boolean) => void;
+  onOpenHistory: () => void;
+  onOpenDate: (date: string) => void;
   resultHeadingRef: RefObject<HTMLHeadingElement | null>;
   savedReflectionId: string | null;
-  todoError: TodoError | null;
-  updatingTodoKey: string | null;
 }) {
   const hasFreshResult = entries.some((item) => item.id === savedReflectionId);
+  const overview = buildOverviewSnapshot(entries, today());
+  const latestReflection =
+    entries.find((entry) => entry.entryDate <= today()) || null;
 
   return (
     <>
-      <header className="rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/86 p-5 shadow-[0_18px_55px_rgba(57,37,20,0.07)]">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p className="text-sm font-bold uppercase tracking-[0.12em] text-[#8b5a22]">
-              {formatDate(today())}
-            </p>
-            <h1
-              className="mt-2 scroll-mt-24 font-serif-display text-4xl font-black leading-none tracking-[-0.06em] outline-none focus-visible:ring-2 focus-visible:ring-[#a96214] focus-visible:ring-offset-4 sm:text-5xl"
-              ref={hasFreshResult ? resultHeadingRef : undefined}
-              tabIndex={hasFreshResult ? -1 : undefined}
-            >
-              Сегодня
-            </h1>
-            <p className="mt-3 max-w-xl leading-7 text-[#6c5b4d]">
-              Все сегодняшние мысли, выводы и действия собраны в одном месте.
-            </p>
-            {hasFreshResult && (
-              <p
-                aria-live="polite"
-                className="mt-3 inline-flex rounded-full bg-[#e1eadb] px-3 py-1.5 text-sm font-bold text-[#365234]"
-              >
-                Запись разобрана и сохранена
-              </p>
-            )}
-          </div>
+      <header className="flex flex-wrap items-end justify-between gap-4 px-1 py-2">
+        <div>
+          <p className="text-xs font-black uppercase tracking-[0.14em] text-[#a96214]">
+            {formatDate(today())}
+          </p>
+          <h1
+            className="mt-2 scroll-mt-24 font-serif-display text-4xl font-black leading-none tracking-[-0.06em] outline-none focus-visible:ring-2 focus-visible:ring-[#a96214] sm:text-5xl"
+            ref={hasFreshResult ? resultHeadingRef : undefined}
+            tabIndex={hasFreshResult ? -1 : undefined}
+          >
+            Обзор
+          </h1>
+        </div>
+        {latestReflection && !overview.isStale && (
           <button
-            className="rounded-full bg-[#221a13] px-5 py-3 font-black text-[#fff4df] transition hover:-translate-y-0.5"
+            className="rounded-full bg-[#d58b22] px-5 py-3 font-black text-white shadow-[0_10px_25px_rgba(213,139,34,0.2)] transition hover:-translate-y-0.5 hover:bg-[#bd741c]"
             onClick={onAddEntry}
             type="button"
           >
-            Добавить запись
+            + Записать мысль
           </button>
-        </div>
+        )}
       </header>
 
-      {entries.length > 0 ? (
-        <DayOverview
-          entries={entries}
-          onDelete={onDelete}
-          onToggleTodos={onToggleTodos}
-          todoError={todoError}
-          updatingTodoKey={updatingTodoKey}
+      {!latestReflection ? (
+        <section className="rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/82 p-7 text-center shadow-[0_16px_45px_rgba(57,37,20,0.06)]">
+          <p className="font-serif-display text-3xl font-black tracking-[-0.05em]">
+            Обзор начнётся с первой мысли
+          </p>
+          <p className="mx-auto mt-3 max-w-lg leading-7 text-[#6c5b4d]">
+            Расскажите, что сейчас занимает внимание. MindFlow выделит главное,
+            сохранит возможные шаги и со временем заметит повторы.
+          </p>
+          <button
+            className="mt-6 rounded-full bg-[#d58b22] px-5 py-3 font-black text-white transition hover:-translate-y-0.5"
+            onClick={onAddEntry}
+            type="button"
+          >
+            Сделать первую запись
+          </button>
+        </section>
+      ) : overview.isStale ? (
+        <StaleOverview
+          daysSinceLatestEntry={overview.daysSinceLatestEntry}
+          latestEntryDate={overview.latestEntryDate!}
+          onAddEntry={onAddEntry}
+          onOpenHistory={onOpenHistory}
         />
       ) : (
-        <EmptyDay />
+        <FreshOverview
+          hasFreshResult={hasFreshResult}
+          onOpenDate={onOpenDate}
+          reflection={latestReflection}
+        />
       )}
     </>
+  );
+}
+
+function StaleOverview({
+  daysSinceLatestEntry,
+  latestEntryDate,
+  onAddEntry,
+  onOpenHistory,
+}: {
+  daysSinceLatestEntry: number | null;
+  latestEntryDate: string;
+  onAddEntry: () => void;
+  onOpenHistory: () => void;
+}) {
+  return (
+    <section className="rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/82 p-7 text-center shadow-[0_16px_45px_rgba(57,37,20,0.06)]">
+      <p className="font-serif-display text-3xl font-black tracking-[-0.05em]">
+        Нет свежих записей
+      </p>
+      <p className="mx-auto mt-3 max-w-lg leading-7 text-[#6c5b4d]">
+        Последняя запись была {formatDateShort(latestEntryDate)}
+        {daysSinceLatestEntry !== null &&
+          ` — ${formatDaysAgo(daysSinceLatestEntry)}`}.
+        Сделайте новую запись, чтобы MindFlow мог показать актуальный вывод.
+      </p>
+      <div className="mt-6 flex flex-wrap justify-center gap-3">
+        <button
+          className="rounded-full bg-[#d58b22] px-5 py-3 font-black text-white transition hover:-translate-y-0.5 hover:bg-[#bd741c]"
+          onClick={onAddEntry}
+          type="button"
+        >
+          Записать новую мысль
+        </button>
+        <button
+          className="rounded-full border border-[#3a2a1d]/10 px-5 py-3 font-black text-[#7a4a1d] transition hover:bg-[#3a2a1d]/5"
+          onClick={onOpenHistory}
+          type="button"
+        >
+          Открыть историю
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function FreshOverview({
+  hasFreshResult,
+  onOpenDate,
+  reflection,
+}: {
+  hasFreshResult: boolean;
+  onOpenDate: (date: string) => void;
+  reflection: Reflection;
+}) {
+  const insights = buildImportantEntryInsights(reflection);
+  const mainInsight = insights[0] || null;
+  const supportingInsights = insights.slice(1);
+  const repeat = reflection.repeats[0] || null;
+  const advice = reflection.todos.find(
+    (todo) => !reflection.completedTodos.includes(todo),
+  );
+
+  return (
+    <section className="rounded-[2rem] border border-[#5b4560]/10 bg-[#fffaf1]/84 p-5 shadow-[0_16px_45px_rgba(57,37,20,0.06)] sm:p-7">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-black uppercase tracking-[0.14em] text-[#7b667d]">
+            {mainInsight ? "Главный вывод" : "Короткий итог"}
+          </p>
+        </div>
+        <button
+          className="rounded-full border border-[#3a2a1d]/10 px-4 py-2 text-sm font-black text-[#7a4a1d] transition hover:bg-[#3a2a1d]/5"
+          onClick={() => onOpenDate(reflection.entryDate)}
+          type="button"
+        >
+          Открыть запись
+        </button>
+      </div>
+
+      <h2 className="mt-5 font-serif-display text-3xl font-black leading-tight tracking-[-0.045em]">
+        {mainInsight || formatOverviewSummary(reflection.summary)}
+      </h2>
+
+      {repeat && (
+        <p className="mt-4 rounded-2xl bg-[#eee7ef]/66 px-4 py-3 text-sm font-bold leading-6 text-[#66546a]">
+          Эта тема уже появлялась {formatDateShort(repeat.previousDate)}.
+        </p>
+      )}
+
+      {supportingInsights.length > 0 && (
+        <ul className="mt-5 grid gap-2 border-t border-[#3a2a1d]/8 pt-5">
+          {supportingInsights.map((insight) => (
+            <li
+              className="grid grid-cols-[auto_1fr] gap-3 leading-7 text-[#4f4034]"
+              key={insight}
+            >
+              <span
+                aria-hidden="true"
+                className="mt-2 h-1.5 w-1.5 rounded-full bg-[#a96214]"
+              />
+              <span>{insight}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {advice && (
+        <div className="mt-6 rounded-3xl border border-[#d58b22]/15 bg-[#f6e6c6] p-5">
+          <p className="text-xs font-black uppercase tracking-[0.12em] text-[#9a5a13]">
+            Совет AI
+          </p>
+          <p className="mt-2 font-bold leading-7 text-[#5f411f]">{advice}</p>
+          <p className="mt-2 text-xs leading-5 text-[#806344]">
+            Предложение на основе этой записи — используйте, только если оно вам
+            подходит.
+          </p>
+        </div>
+      )}
+      {hasFreshResult && (
+        <p
+          aria-live="polite"
+          className="mt-4 text-center text-sm font-bold text-[#56704f]"
+        >
+          Разбор обновлён после новой записи
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -1232,19 +1366,6 @@ function SessionDetails({ reflection }: { reflection: Reflection }) {
   );
 }
 
-function EmptyDay() {
-  return (
-    <section className="rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/78 p-8 text-center shadow-[0_14px_46px_rgba(57,37,20,0.055)]">
-      <p className="font-serif-display text-3xl font-black tracking-[-0.05em]">
-        Сегодня пока тихо
-      </p>
-      <p className="mt-3 leading-7 text-[#6c5b4d]">
-        Добавьте первую запись — здесь соберутся выводы и действия дня.
-      </p>
-    </section>
-  );
-}
-
 function CompactHistory({
   groupedByDate,
   onChangeMonth,
@@ -1526,6 +1647,21 @@ function formatDateShort(date: string) {
     day: "numeric",
     month: "short",
   }).format(new Date(`${date}T12:00:00`));
+}
+
+function formatDaysAgo(days: number) {
+  return `${days} ${pluralize(days, "день", "дня", "дней")} назад`;
+}
+
+function formatOverviewSummary(summary: string) {
+  const normalized = summary.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "Краткий итог пока не сформирован.";
+  }
+  if (normalized.length <= 220) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 219).trimEnd()}…`;
 }
 
 function formatTime(date: string) {
