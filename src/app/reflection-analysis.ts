@@ -1,5 +1,13 @@
 export type AnalysisSource = "ai" | "fallback" | "legacy";
 
+export type ReflectionOverview = {
+  observations: string[];
+  actionSupport: {
+    action: string;
+    rationale: string;
+  } | null;
+};
+
 export type ReflectionAnalysis = {
   summary: string;
   themes: string[];
@@ -10,6 +18,7 @@ export type ReflectionAnalysis = {
     description: string;
     previousDate: string;
   }>;
+  overview: ReflectionOverview;
 };
 
 export type Reflection = {
@@ -27,6 +36,7 @@ export type Reflection = {
     description: string;
     previousDate: string;
   }>;
+  overview: ReflectionOverview | null;
   analysisSource: AnalysisSource;
   analysisModel: string | null;
   analysisVersion: string | null;
@@ -78,6 +88,10 @@ export function analyzeReflectionWithRules(
     insights,
     todos,
     repeats,
+    overview: {
+      observations: [],
+      actionSupport: null,
+    },
   };
 }
 

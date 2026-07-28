@@ -4,8 +4,12 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   AnalysisSource,
   Reflection,
+  ReflectionOverview,
 } from "./reflection-analysis";
-import { analyzeReflection } from "./reflection-ai";
+import {
+  analyzeReflection,
+  generateReflectionOverview,
+} from "./reflection-ai";
 
 type ReflectionRow = {
   id: string;
@@ -18,6 +22,7 @@ type ReflectionRow = {
   todos: unknown;
   completed_todos: unknown;
   repeats: unknown;
+  overview?: unknown;
   analysis_source?: unknown;
   analysis_model?: unknown;
   analysis_version?: unknown;
@@ -64,6 +69,7 @@ export async function createReflection(
       completed_todos: [],
       entry_date: entryDate,
       insights: analysis.insights,
+      overview: analysis.overview,
       raw_text: input.rawText,
       repeats: analysis.repeats,
       summary: analysis.summary,
@@ -134,6 +140,7 @@ export async function updateReflection(
       completed_todos: completedTodos,
       entry_date: nextDate,
       insights: analysis.insights,
+      overview: analysis.overview,
       raw_text: input.rawText,
       repeats: analysis.repeats,
       summary: analysis.summary,
@@ -222,6 +229,41 @@ export async function updateCompletedTodos(
   };
 }
 
+export async function generateAndStoreReflectionOverview(
+  supabase: SupabaseClient,
+  userId: string,
+  id: string,
+) {
+  const existing = await findReflection(supabase, userId, id);
+  if (!existing) {
+    return null;
+  }
+  if (existing.overview) {
+    return existing;
+  }
+
+  const previous = (await listReflections(supabase, userId)).filter(
+    (item) => item.id !== id && item.entryDate < existing.entryDate,
+  );
+  const overview = await generateReflectionOverview(existing, previous);
+  const { data, error } = await supabase
+    .from("mindflow_entries")
+    .update({
+      overview,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .eq("user_id", userId)
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data ? rowToReflection(data as ReflectionRow) : null;
+}
+
 async function findReflection(
   supabase: SupabaseClient,
   userId: string,
@@ -256,6 +298,7 @@ function rowToReflection(row: ReflectionRow): Reflection {
     todos,
     completedTodos: todos.filter((todo) => storedCompletedTodos.has(todo)),
     repeats: repeatArray(row.repeats),
+    overview: overviewValue(row.overview, new Set(todos)),
     analysisSource: analysisSource(row.analysis_source),
     analysisModel: nullableString(row.analysis_model),
     analysisVersion: nullableString(row.analysis_version),
@@ -263,6 +306,45 @@ function rowToReflection(row: ReflectionRow): Reflection {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function overviewValue(
+  value: unknown,
+  allowedActions: Set<string>,
+): ReflectionOverview | null {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    !("observations" in value) ||
+    !Array.isArray(value.observations)
+  ) {
+    return null;
+  }
+
+  const observations = value.observations.filter(
+    (item): item is string => typeof item === "string" && item.trim().length > 0,
+  );
+
+  const actionSupport =
+    "actionSupport" in value &&
+    typeof value.actionSupport === "object" &&
+    value.actionSupport !== null &&
+    !Array.isArray(value.actionSupport) &&
+    "action" in value.actionSupport &&
+    typeof value.actionSupport.action === "string" &&
+    "rationale" in value.actionSupport &&
+    typeof value.actionSupport.rationale === "string" &&
+    value.actionSupport.action.trim().length > 0 &&
+    value.actionSupport.rationale.trim().length > 0 &&
+    allowedActions.has(value.actionSupport.action)
+      ? {
+          action: value.actionSupport.action.trim(),
+          rationale: value.actionSupport.rationale.trim(),
+        }
+      : null;
+
+  return { observations, actionSupport };
 }
 
 function stringArray(value: unknown) {

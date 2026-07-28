@@ -5,12 +5,18 @@ import {
   analyzeReflectionWithRules,
   type Reflection,
   type ReflectionAnalysis,
+  type ReflectionOverview,
 } from "./reflection-analysis";
-import { buildReflectionAnalysisMessages } from "./reflection-ai-prompt";
+import {
+  buildReflectionAnalysisMessages,
+  buildReflectionOverviewMessages,
+} from "./reflection-ai-prompt";
 import {
   parseReflectionAnalysis,
+  parseReflectionOverview,
   REFLECTION_ANALYSIS_VERSION,
   reflectionAnalysisSchema,
+  reflectionOverviewSchema,
 } from "./reflection-ai-schema";
 
 export type GeneratedReflectionAnalysis = ReflectionAnalysis & {
@@ -60,4 +66,24 @@ export async function analyzeReflection(
       analysisGeneratedAt: generatedAt,
     };
   }
+}
+
+export async function generateReflectionOverview(
+  reflection: Reflection,
+  previous: Reflection[],
+): Promise<ReflectionOverview> {
+  const { messages } = buildReflectionOverviewMessages({
+    reflection,
+    previous,
+  });
+  const completion = await createStructuredCompletion({
+    messages,
+    schema: reflectionOverviewSchema,
+    schemaName: "mindflow_reflection_overview",
+  });
+
+  return parseReflectionOverview(
+    completion.content,
+    new Set(reflection.todos),
+  );
 }

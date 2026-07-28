@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -8,13 +9,9 @@ import {
   type RefObject,
 } from "react";
 import {
-  buildCalendarDates,
-  buildDaySummary,
-  buildImportantEntryInsights,
   buildOverviewSnapshot,
   buildPrimaryInsights,
   groupDayActions,
-  shiftMonth,
 } from "./reflection-history";
 
 type Reflection = {
@@ -32,6 +29,13 @@ type Reflection = {
     description: string;
     previousDate: string;
   }>;
+  overview: {
+    observations: string[];
+    actionSupport: {
+      action: string;
+      rationale: string;
+    } | null;
+  } | null;
   analysisSource: "ai" | "fallback" | "legacy";
   analysisModel: string | null;
   analysisVersion: string | null;
@@ -41,6 +45,7 @@ type Reflection = {
 };
 
 type DiaryView = "overview" | "capture" | "history";
+type DayReturnView = DiaryView;
 
 type TodoError = {
   reflectionId: string;
@@ -51,6 +56,11 @@ type TodoTarget = {
   reflectionId: string;
   todo: string;
 };
+
+type OverviewRequest = {
+  reflectionId: string;
+  status: "loading" | "error";
+} | null;
 
 type SpeechRecognitionEventLike = {
   resultIndex: number;
@@ -98,11 +108,15 @@ export default function DiaryApp({
   const [selectedHistoryDate, setSelectedHistoryDate] = useState<string | null>(
     null,
   );
+  const [dayReturnView, setDayReturnView] =
+    useState<DayReturnView>("history");
   const [savedReflectionId, setSavedReflectionId] = useState<string | null>(null);
   const [fieldError, setFieldError] = useState("");
   const [todoError, setTodoError] = useState<TodoError | null>(null);
   const [updatingTodoKey, setUpdatingTodoKey] = useState<string | null>(null);
   const [message, setMessage] = useState("");
+  const [overviewRequest, setOverviewRequest] =
+    useState<OverviewRequest>(null);
   const topRef = useRef<HTMLDivElement | null>(null);
   const resultHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -177,16 +191,13 @@ export default function DiaryApp({
       const data = (await response.json()) as { reflection: Reflection };
       setReflections((items) => [data.reflection, ...items]);
       setSavedReflectionId(data.reflection.id);
-      if (data.reflection.entryDate === today()) {
-        setActiveView("overview");
-        setSelectedHistoryDate(null);
-      } else {
-        setActiveView("history");
-        setSelectedHistoryDate(data.reflection.entryDate);
-      }
+      setActiveView("history");
+      setSelectedHistoryDate(data.reflection.entryDate);
+      setDayReturnView("overview");
       setRawText("");
       setEntryDate(today());
       setTodoError(null);
+      setOverviewRequest(null);
       setMessage(
         data.reflection.analysisSource === "fallback"
           ? "AI-анализ временно недоступен. Запись сохранена с базовым разбором."
@@ -200,6 +211,30 @@ export default function DiaryApp({
       setIsSaving(false);
     }
   }
+
+  const generateOverview = useCallback(async (reflectionId: string) => {
+    setOverviewRequest({ reflectionId, status: "loading" });
+
+    try {
+      const response = await fetch(
+        `/api/reflections/${reflectionId}/overview`,
+        { method: "POST" },
+      );
+      if (!response.ok) {
+        throw new Error("Overview generation failed");
+      }
+
+      const data = (await response.json()) as { reflection: Reflection };
+      setReflections((items) =>
+        items.map((item) =>
+          item.id === data.reflection.id ? data.reflection : item,
+        ),
+      );
+      setOverviewRequest(null);
+    } catch {
+      setOverviewRequest({ reflectionId, status: "error" });
+    }
+  }, []);
 
   async function deleteReflection(reflectionId: string) {
     if (isSaving) {
@@ -266,7 +301,10 @@ export default function DiaryApp({
     openCapture();
   }
 
-  function openHistoryDate(date: string) {
+  function openHistoryDate(
+    date: string,
+    returnView: DayReturnView = "history",
+  ) {
     if (isSaving) {
       return;
     }
@@ -274,6 +312,7 @@ export default function DiaryApp({
     setIsRecording(false);
     setActiveView("history");
     setSelectedHistoryDate(date);
+    setDayReturnView(returnView);
     setSavedReflectionId(null);
     setTodoError(null);
     setMessage("");
@@ -296,6 +335,9 @@ export default function DiaryApp({
     setMessage("");
     if (view !== "history") {
       setSelectedHistoryDate(null);
+    } else {
+      setSelectedHistoryDate(null);
+      setDayReturnView("history");
     }
     if (view === "capture") {
       window.requestAnimationFrame(() => textareaRef.current?.focus());
@@ -512,7 +554,7 @@ export default function DiaryApp({
               setFieldError("");
             }}
             onOpenLatest={(reflection) => {
-              openHistoryDate(reflection.entryDate);
+              openHistoryDate(reflection.entryDate, "capture");
             }}
             onSave={saveReflection}
             onToggleRecording={toggleRecording}
@@ -524,11 +566,13 @@ export default function DiaryApp({
         {activeView === "overview" && (
           <OverviewView
             entries={reflections}
+            onGenerateOverview={generateOverview}
             onAddEntry={addAnotherEntry}
             onOpenHistory={() => changeView("history")}
-            onOpenDate={openHistoryDate}
+            onOpenDate={(date) => openHistoryDate(date, "overview")}
             resultHeadingRef={resultHeadingRef}
             savedReflectionId={savedReflectionId}
+            overviewRequest={overviewRequest}
           />
         )}
 
@@ -536,12 +580,23 @@ export default function DiaryApp({
           <HistoryView
             groupedByDate={groupedByDate}
             onBack={() => {
-              setSelectedHistoryDate(null);
-              setSavedReflectionId(null);
-              setTodoError(null);
+              if (dayReturnView === "history") {
+                setSelectedHistoryDate(null);
+                setSavedReflectionId(null);
+                setTodoError(null);
+                return;
+              }
+              changeView(dayReturnView);
             }}
+            backLabel={
+              dayReturnView === "overview"
+                ? "Назад в обзор"
+                : dayReturnView === "capture"
+                  ? "Назад к записи"
+                  : "Назад к дням"
+            }
             onDelete={deleteReflection}
-            onOpenDate={openHistoryDate}
+            onOpenDate={(date) => openHistoryDate(date, "history")}
             onToggleTodos={toggleTodos}
             resultHeadingRef={resultHeadingRef}
             savedReflectionId={savedReflectionId}
@@ -784,23 +839,46 @@ function CaptureView({
 
 function OverviewView({
   entries,
+  onGenerateOverview,
   onAddEntry,
   onOpenHistory,
   onOpenDate,
   resultHeadingRef,
   savedReflectionId,
+  overviewRequest,
 }: {
   entries: Reflection[];
+  onGenerateOverview: (reflectionId: string) => void;
   onAddEntry: () => void;
   onOpenHistory: () => void;
   onOpenDate: (date: string) => void;
   resultHeadingRef: RefObject<HTMLHeadingElement | null>;
   savedReflectionId: string | null;
+  overviewRequest: OverviewRequest;
 }) {
   const hasFreshResult = entries.some((item) => item.id === savedReflectionId);
   const overview = buildOverviewSnapshot(entries, today());
   const latestReflection =
     entries.find((entry) => entry.entryDate <= today()) || null;
+  const needsOverview =
+    latestReflection !== null &&
+    !overview.isStale &&
+    latestReflection.overview === null;
+  const requestForLatest =
+    latestReflection && overviewRequest?.reflectionId === latestReflection.id
+      ? overviewRequest
+      : null;
+
+  useEffect(() => {
+    if (needsOverview && requestForLatest === null) {
+      onGenerateOverview(latestReflection.id);
+    }
+  }, [
+    latestReflection,
+    needsOverview,
+    onGenerateOverview,
+    requestForLatest,
+  ]);
 
   return (
     <>
@@ -855,7 +933,10 @@ function OverviewView({
       ) : (
         <FreshOverview
           hasFreshResult={hasFreshResult}
+          isGeneratingOverview={requestForLatest?.status === "loading"}
           onOpenDate={onOpenDate}
+          onRetryOverview={() => onGenerateOverview(latestReflection.id)}
+          overviewError={requestForLatest?.status === "error"}
           reflection={latestReflection}
         />
       )}
@@ -907,27 +988,27 @@ function StaleOverview({
 
 function FreshOverview({
   hasFreshResult,
+  isGeneratingOverview,
   onOpenDate,
+  onRetryOverview,
+  overviewError,
   reflection,
 }: {
   hasFreshResult: boolean;
+  isGeneratingOverview: boolean;
   onOpenDate: (date: string) => void;
+  onRetryOverview: () => void;
+  overviewError: boolean;
   reflection: Reflection;
 }) {
-  const insights = buildImportantEntryInsights(reflection);
-  const mainInsight = insights[0] || null;
-  const supportingInsights = insights.slice(1);
-  const repeat = reflection.repeats[0] || null;
-  const advice = reflection.todos.find(
-    (todo) => !reflection.completedTodos.includes(todo),
-  );
+  const perspective = reflection.overview;
 
   return (
     <section className="rounded-[2rem] border border-[#5b4560]/10 bg-[#fffaf1]/84 p-5 shadow-[0_16px_45px_rgba(57,37,20,0.06)] sm:p-7">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs font-black uppercase tracking-[0.14em] text-[#7b667d]">
-            {mainInsight ? "Главный вывод" : "Короткий итог"}
+            Между записями
           </p>
         </div>
         <button
@@ -939,45 +1020,39 @@ function FreshOverview({
         </button>
       </div>
 
-      <h2 className="mt-5 font-serif-display text-3xl font-black leading-tight tracking-[-0.045em]">
-        {mainInsight || formatOverviewSummary(reflection.summary)}
-      </h2>
-
-      {repeat && (
-        <p className="mt-4 rounded-2xl bg-[#eee7ef]/66 px-4 py-3 text-sm font-bold leading-6 text-[#66546a]">
-          Эта тема уже появлялась {formatDateShort(repeat.previousDate)}.
-        </p>
-      )}
-
-      {supportingInsights.length > 0 && (
-        <ul className="mt-5 grid gap-2 border-t border-[#3a2a1d]/8 pt-5">
-          {supportingInsights.map((insight) => (
-            <li
-              className="grid grid-cols-[auto_1fr] gap-3 leading-7 text-[#4f4034]"
-              key={insight}
+      {perspective && perspective.observations.length > 0 ? (
+        <div className="mt-5 grid gap-4">
+          {perspective.observations.map((observation, index) => (
+            <p
+              className={
+                index === 0
+                  ? "font-serif-display text-2xl font-black leading-snug tracking-[-0.035em] sm:text-3xl"
+                  : "border-t border-[#3a2a1d]/8 pt-4 text-[1.05rem] leading-8 text-[#4f4034]"
+              }
+              key={observation}
             >
-              <span
-                aria-hidden="true"
-                className="mt-2 h-1.5 w-1.5 rounded-full bg-[#a96214]"
-              />
-              <span>{insight}</span>
-            </li>
+              {observation}
+            </p>
           ))}
-        </ul>
-      )}
-
-      {advice && (
-        <div className="mt-6 rounded-3xl border border-[#d58b22]/15 bg-[#f6e6c6] p-5">
-          <p className="text-xs font-black uppercase tracking-[0.12em] text-[#9a5a13]">
-            Совет AI
+        </div>
+      ) : perspective ? (
+        <div className="mt-5 rounded-3xl bg-[#eee7ef]/58 p-5 text-[#66546a]">
+          <p className="font-serif-display text-xl font-black tracking-[-0.025em]">
+            Пока без новой динамики
           </p>
-          <p className="mt-2 font-bold leading-7 text-[#5f411f]">{advice}</p>
-          <p className="mt-2 text-xs leading-5 text-[#806344]">
-            Предложение на основе этой записи — используйте, только если оно вам
-            подходит.
+          <p className="mt-2 text-sm leading-6">
+            В этой записи нет подтверждённого изменения или повтора относительно
+            предыдущих. Полный разбор уже готов внутри дня.
           </p>
         </div>
+      ) : (
+        <OverviewLoadingState
+          isLoading={isGeneratingOverview}
+          onRetry={onRetryOverview}
+          showError={overviewError}
+        />
       )}
+
       {hasFreshResult && (
         <p
           aria-live="polite"
@@ -990,7 +1065,51 @@ function FreshOverview({
   );
 }
 
+function OverviewLoadingState({
+  isLoading,
+  onRetry,
+  showError,
+}: {
+  isLoading: boolean;
+  onRetry: () => void;
+  showError: boolean;
+}) {
+  if (showError) {
+    return (
+      <div className="mt-5 rounded-3xl bg-[#eee7ef]/58 p-5">
+        <p className="font-bold leading-7 text-[#66546a]">
+          Не получилось сформировать взгляд на эту запись.
+        </p>
+        <button
+          className="mt-3 rounded-full border border-[#66546a]/15 px-4 py-2 text-sm font-black text-[#66546a] transition hover:bg-white/45"
+          onClick={onRetry}
+          type="button"
+        >
+          Попробовать ещё раз
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      aria-live="polite"
+      className="mt-5 rounded-3xl bg-[#eee7ef]/58 p-5 text-[#66546a]"
+    >
+      <p className="font-bold">
+        {isLoading
+          ? "Собираю взгляд на эту запись…"
+          : "Взгляд на запись ещё не сформирован."}
+      </p>
+      <p className="mt-2 text-sm leading-6">
+        Ищу не пересказ, а связи, противоречия и возможную точку движения.
+      </p>
+    </div>
+  );
+}
+
 function HistoryView({
+  backLabel,
   groupedByDate,
   onBack,
   onDelete,
@@ -1002,6 +1121,7 @@ function HistoryView({
   todoError,
   updatingTodoKey,
 }: {
+  backLabel: string;
   groupedByDate: Record<string, Reflection[]>;
   onBack: () => void;
   onDelete: (reflectionId: string) => void;
@@ -1013,12 +1133,6 @@ function HistoryView({
   todoError: TodoError | null;
   updatingTodoKey: string | null;
 }) {
-  const historyDates = Object.keys(groupedByDate).sort((left, right) =>
-    right.localeCompare(left),
-  );
-  const [visibleMonth, setVisibleMonth] = useState(
-    (historyDates[0] || today()).slice(0, 7),
-  );
   const selectedEntries =
     selectedDate !== null ? groupedByDate[selectedDate] || [] : [];
   const hasFreshResult = selectedEntries.some(
@@ -1030,20 +1144,18 @@ function HistoryView({
       <>
         <header className="px-1 py-2">
           <p className="text-sm font-bold uppercase tracking-[0.12em] text-[#8b5a22]">
-            Архив по дням
+            История
           </p>
           <h1 className="mt-2 font-serif-display text-4xl font-black leading-none tracking-[-0.06em] sm:text-5xl">
-            История
+            Дни
           </h1>
           <p className="mt-3 max-w-2xl leading-7 text-[#6c5b4d]">
-            Выберите день — список сменится его разбором без формы новой записи.
+            Выберите день, чтобы открыть его мысли, инсайты и действия.
           </p>
         </header>
         <CompactHistory
           groupedByDate={groupedByDate}
-          onChangeMonth={setVisibleMonth}
           onSelect={onOpenDate}
-          visibleMonth={visibleMonth}
         />
       </>
     );
@@ -1057,7 +1169,7 @@ function HistoryView({
           onClick={onBack}
           type="button"
         >
-          ← Назад к дням
+          ← {backLabel}
         </button>
         <p className="mt-5 text-xs font-black uppercase tracking-[0.14em] text-[#8b7868]">
           Сохранённый день
@@ -1111,6 +1223,16 @@ function DayOverview({
 }) {
   const primaryInsights = buildPrimaryInsights(entries);
   const actions = groupDayActions(entries);
+  const actionSupport =
+    entries.find((entry) => entry.overview?.actionSupport)?.overview
+      ?.actionSupport || null;
+  const orderedActions = actionSupport
+    ? [...actions].sort(
+        (left, right) =>
+          Number(right.todo === actionSupport.action) -
+          Number(left.todo === actionSupport.action),
+      )
+    : actions;
 
   return (
     <section className="grid gap-8 rounded-[2rem] border border-[#3a2a1d]/8 bg-[#fffaf1]/72 px-5 py-6 shadow-[0_14px_42px_rgba(57,37,20,0.045)] sm:px-7 sm:py-8">
@@ -1170,12 +1292,13 @@ function DayOverview({
         >
           Следующие шаги
         </h2>
-        {actions.length > 0 ? (
+        {orderedActions.length > 0 ? (
           <ul className="mt-4 grid gap-2">
-            {actions.map((action) => {
+            {orderedActions.map((action) => {
               const isCompleted = action.sources.every(
                 (source) => source.completed,
               );
+              const isPrimaryAction = action.todo === actionSupport?.action;
               const completedCount = action.sources.filter(
                 (source) => source.completed,
               ).length;
@@ -1185,9 +1308,18 @@ function DayOverview({
               }));
               return (
                 <li
-                  className="rounded-2xl bg-white/70 px-4 py-3"
+                  className={
+                    isPrimaryAction
+                      ? "rounded-2xl border border-[#d58b22]/20 bg-[#f6e6c6] px-4 py-4"
+                      : "rounded-2xl bg-white/70 px-4 py-3"
+                  }
                   key={action.todo}
                 >
+                  {isPrimaryAction && (
+                    <p className="mb-2 text-xs font-black uppercase tracking-[0.12em] text-[#9a5a13]">
+                      Что поможет сдвинуть · выбор ИИ
+                    </p>
+                  )}
                   <label className="flex cursor-pointer items-start gap-3">
                     <input
                       aria-label={`${isCompleted ? "Отметить невыполненным" : "Отметить выполненным"}: ${action.todo}`}
@@ -1214,6 +1346,11 @@ function DayOverview({
                           ? `Из ${action.sources.length} записей · выполнено ${completedCount}`
                           : formatTime(action.sources[0].createdAt)}
                       </span>
+                      {isPrimaryAction && actionSupport?.rationale && (
+                        <span className="mt-3 block border-t border-[#9a5a13]/10 pt-3 text-sm font-normal leading-6 text-[#806344]">
+                          {actionSupport.rationale}
+                        </span>
+                      )}
                     </span>
                   </label>
                 </li>
@@ -1368,237 +1505,47 @@ function SessionDetails({ reflection }: { reflection: Reflection }) {
 
 function CompactHistory({
   groupedByDate,
-  onChangeMonth,
   onSelect,
-  visibleMonth,
 }: {
   groupedByDate: Record<string, Reflection[]>;
-  onChangeMonth: (month: string) => void;
   onSelect: (date: string) => void;
-  visibleMonth: string;
 }) {
   const days = Object.entries(groupedByDate).sort(([dateA], [dateB]) =>
     dateB.localeCompare(dateA),
   );
-  const recentDays = days.slice(0, 6);
 
   return (
-    <div className="grid gap-5">
-      <HistoryCalendar
-        groupedByDate={groupedByDate}
-        onChangeMonth={onChangeMonth}
-        onSelect={onSelect}
-        visibleMonth={visibleMonth}
-      />
-
-      <section className="rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/78 p-5 shadow-[0_14px_46px_rgba(57,37,20,0.055)]">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h2 className="font-serif-display text-3xl font-black tracking-[-0.05em]">
-              Последние дни
-            </h2>
-            <p className="mt-2 text-sm leading-6 text-[#6c5b4d]">
-              Быстрый доступ к недавним итогам без выбора даты в календаре.
+    <section className="overflow-hidden rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/78 shadow-[0_14px_46px_rgba(57,37,20,0.055)]">
+      {days.map(([date, items], index) => (
+        <button
+          className={`flex w-full items-center gap-4 px-5 py-5 text-left text-[#3a2a1d] transition hover:bg-white/65 sm:px-7 ${
+            index > 0 ? "border-t border-[#3a2a1d]/8" : ""
+          }`}
+          key={date}
+          onClick={() => onSelect(date)}
+          type="button"
+        >
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-black uppercase tracking-[0.1em] text-[#8b5a22]">
+              {formatDate(date)}
+            </p>
+            <p className="mt-2 line-clamp-2 leading-6 text-[#5f5043]">
+              {items[0]?.summary || items[0]?.insights[0] || "Запись сохранена"}
             </p>
           </div>
-          <span className="rounded-full bg-[#efe0c8] px-3 py-2 text-sm font-bold text-[#7a4a1d]">
-            {days.length} дн.
-          </span>
-        </div>
-
-        <div className="mt-4 grid gap-3">
-          {recentDays.map(([date, items]) => {
-            const insightsCount = items.reduce(
-              (sum, item) => sum + item.insights.length,
-              0,
-            );
-            const repeatsCount = items.reduce(
-              (sum, item) => sum + item.repeats.length,
-              0,
-            );
-            const todosCount = items.reduce(
-              (sum, item) => sum + item.todos.length,
-              0,
-            );
-            const themes = Array.from(
-              new Set(items.flatMap((item) => item.themes)),
-            ).slice(0, 4);
-
-            return (
-              <button
-                className="rounded-3xl border border-[#3a2a1d]/8 bg-white/58 p-4 text-left text-[#3a2a1d] transition hover:-translate-y-0.5 hover:bg-white"
-                key={date}
-                onClick={() => onSelect(date)}
-                type="button"
-              >
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-black uppercase tracking-[0.12em] text-[#8b5a22]">
-                      {formatDate(date)}
-                    </p>
-                    <p className="mt-2 line-clamp-2 text-base font-black leading-6">
-                      {buildDaySummary(items)}
-                    </p>
-                  </div>
-                  <span className="rounded-full bg-[#efe0c8] px-3 py-2 text-xs font-black">
-                    Открыть день
-                  </span>
-                </div>
-
-                <div className="mt-4 grid grid-cols-3 gap-2 text-center text-sm">
-                  <span className="rounded-2xl bg-[#fffaf1] px-3 py-2">
-                    <b>{insightsCount}</b>
-                    <span className="block text-xs opacity-65">инсайта</span>
-                  </span>
-                  <span className="rounded-2xl bg-[#fffaf1] px-3 py-2">
-                    <b>{repeatsCount}</b>
-                    <span className="block text-xs opacity-65">зон</span>
-                  </span>
-                  <span className="rounded-2xl bg-[#fffaf1] px-3 py-2">
-                    <b>{todosCount}</b>
-                    <span className="block text-xs opacity-65">действий</span>
-                  </span>
-                </div>
-
-                {themes.length > 0 && (
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {themes.map((theme) => (
-                      <span
-                        className="rounded-full bg-[#ede0c9] px-3 py-1 text-xs font-bold text-[#4a3828]"
-                        key={theme}
-                      >
-                        {theme}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </button>
-            );
-          })}
-          {recentDays.length === 0 && (
-            <p className="rounded-3xl bg-white/58 p-5 text-center text-[#6c5b4d]">
-              История появится после первой записи.
-            </p>
-          )}
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function HistoryCalendar({
-  groupedByDate,
-  onChangeMonth,
-  onSelect,
-  visibleMonth,
-}: {
-  groupedByDate: Record<string, Reflection[]>;
-  onChangeMonth: (month: string) => void;
-  onSelect: (date: string) => void;
-  visibleMonth: string;
-}) {
-  const dates = buildCalendarDates(visibleMonth);
-  const [year, month] = visibleMonth.split("-").map(Number);
-  const monthLabel = new Intl.DateTimeFormat("ru", {
-    month: "long",
-    year: "numeric",
-  }).format(new Date(year, month - 1, 1));
-  const markedDays = dates.filter(
-    (date): date is string => Boolean(date && groupedByDate[date]?.length),
-  ).length;
-
-  return (
-    <section className="rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/86 p-4 shadow-[0_14px_46px_rgba(57,37,20,0.055)] sm:p-5">
-      <div className="flex items-center justify-between gap-3">
-        <button
-          aria-label="Предыдущий месяц"
-          className="grid h-11 w-11 shrink-0 place-items-center rounded-full border border-[#3a2a1d]/10 bg-white/58 text-xl font-black text-[#7a4a1d] transition hover:bg-white"
-          onClick={() => onChangeMonth(shiftMonth(visibleMonth, -1))}
-          type="button"
-        >
-          ←
-        </button>
-        <div className="min-w-0 text-center">
-          <p className="font-serif-display text-2xl font-black capitalize tracking-[-0.04em]">
-            {monthLabel}
-          </p>
-          <p className="mt-1 text-xs font-bold text-[#6c5b4d]">
-            {markedDays > 0
-              ? `${markedDays} ${pluralize(markedDays, "день с записями", "дня с записями", "дней с записями")}`
-              : "В этом месяце записей нет"}
-          </p>
-        </div>
-        <button
-          aria-label="Следующий месяц"
-          className="grid h-11 w-11 shrink-0 place-items-center rounded-full border border-[#3a2a1d]/10 bg-white/58 text-xl font-black text-[#7a4a1d] transition hover:bg-white"
-          onClick={() => onChangeMonth(shiftMonth(visibleMonth, 1))}
-          type="button"
-        >
-          →
-        </button>
-      </div>
-
-      <div
-        aria-label={`Календарь за ${monthLabel}`}
-        className="mt-5 grid grid-cols-7 gap-1.5"
-        role="grid"
-      >
-        {["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((weekday) => (
           <span
-            className="pb-1 text-center text-[0.68rem] font-black uppercase tracking-[0.08em] text-[#8b7868]"
-            key={weekday}
-            role="columnheader"
+            aria-hidden="true"
+            className="shrink-0 text-2xl font-bold text-[#a96214]"
           >
-            {weekday}
+            →
           </span>
-        ))}
-
-        {dates.map((date, index) => {
-          if (!date) {
-            return (
-              <span
-                aria-hidden="true"
-                className="aspect-square min-h-10"
-                key={`empty-${index}`}
-                role="gridcell"
-              />
-            );
-          }
-
-          const entriesCount = groupedByDate[date]?.length || 0;
-          const dayNumber = Number(date.slice(-2));
-          const isToday = date === today();
-
-          return (
-            <span className="aspect-square min-h-10" key={date} role="gridcell">
-              {entriesCount > 0 ? (
-                <button
-                  aria-label={`${formatDate(date)}: ${entriesCount} ${pluralize(entriesCount, "запись", "записи", "записей")}`}
-                  className={`relative grid h-full w-full place-items-center rounded-2xl bg-[#221a13] text-sm font-black text-[#fff4df] shadow-[0_7px_18px_rgba(34,26,19,0.14)] transition hover:-translate-y-0.5 hover:bg-[#3b2b1d] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a96214] focus-visible:ring-offset-2 ${
-                    isToday ? "ring-2 ring-[#d58b22] ring-offset-2" : ""
-                  }`}
-                  onClick={() => onSelect(date)}
-                  type="button"
-                >
-                  {dayNumber}
-                  <span className="absolute right-1 top-1 grid min-h-4 min-w-4 place-items-center rounded-full bg-[#d58b22] px-1 text-[0.6rem] leading-none text-white">
-                    {entriesCount}
-                  </span>
-                </button>
-              ) : (
-                <span
-                  aria-label={formatDate(date)}
-                  className={`grid h-full w-full place-items-center rounded-2xl text-sm font-bold text-[#8b7868] ${
-                    isToday ? "bg-[#efe0c8] text-[#7a4a1d]" : ""
-                  }`}
-                >
-                  {dayNumber}
-                </span>
-              )}
-            </span>
-          );
-        })}
-      </div>
+        </button>
+      ))}
+      {days.length === 0 && (
+        <p className="p-7 text-center text-[#6c5b4d]">
+          История появится после первой записи.
+        </p>
+      )}
     </section>
   );
 }
@@ -1651,17 +1598,6 @@ function formatDateShort(date: string) {
 
 function formatDaysAgo(days: number) {
   return `${days} ${pluralize(days, "день", "дня", "дней")} назад`;
-}
-
-function formatOverviewSummary(summary: string) {
-  const normalized = summary.replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return "Краткий итог пока не сформирован.";
-  }
-  if (normalized.length <= 220) {
-    return normalized;
-  }
-  return `${normalized.slice(0, 219).trimEnd()}…`;
 }
 
 function formatTime(date: string) {

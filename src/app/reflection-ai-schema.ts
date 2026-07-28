@@ -1,6 +1,49 @@
-import type { ReflectionAnalysis } from "./reflection-analysis";
+import type {
+  ReflectionAnalysis,
+  ReflectionOverview,
+} from "./reflection-analysis";
 
-export const REFLECTION_ANALYSIS_VERSION = "mindflow-reflection-v2";
+export const REFLECTION_ANALYSIS_VERSION = "mindflow-reflection-v3";
+
+export const reflectionOverviewSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    observations: {
+      type: "array",
+      minItems: 0,
+      maxItems: 2,
+      uniqueItems: true,
+      items: {
+        type: "string",
+        minLength: 20,
+        maxLength: 320,
+      },
+      description:
+        "До двух коротких наблюдений только об изменении, повторе или незавершённой линии между текущей и предыдущими записями. Пустой массив, если подтверждённой динамики нет.",
+    },
+    actionSupport: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        action: {
+          type: "string",
+          minLength: 0,
+          maxLength: 160,
+        },
+        rationale: {
+          type: "string",
+          minLength: 0,
+          maxLength: 320,
+        },
+      },
+      required: ["action", "rationale"],
+      description:
+        "Самое полезное действие из todos текущей записи и объяснение его рычага. Оба поля пустые, если выделить главный шаг нельзя.",
+    },
+  },
+  required: ["observations", "actionSupport"],
+} as const;
 
 export const reflectionAnalysisSchema = {
   type: "object",
@@ -77,8 +120,9 @@ export const reflectionAnalysisSchema = {
       description:
         "Только смысловые повторы, подтверждённые одной из переданных предыдущих записей.",
     },
+    overview: reflectionOverviewSchema,
   },
-  required: ["summary", "themes", "insights", "todos", "repeats"],
+  required: ["summary", "themes", "insights", "todos", "repeats", "overview"],
 } as const;
 
 export function parseReflectionAnalysis(
@@ -107,6 +151,7 @@ export function parseReflectionAnalysis(
     "insights",
   );
   const todos = requiredStringArray(value.todos, 0, 4, 6, 160, "todos");
+  const overview = parseReflectionOverviewValue(value.overview, new Set(todos));
 
   if (!Array.isArray(value.repeats) || value.repeats.length > 3) {
     throw new Error("AI analysis contains invalid repeats.");
@@ -142,7 +187,65 @@ export function parseReflectionAnalysis(
     };
   });
 
-  return { summary, themes, insights, todos, repeats };
+  return { summary, themes, insights, todos, repeats, overview };
+}
+
+export function parseReflectionOverview(
+  content: string,
+  allowedActions: Set<string>,
+): ReflectionOverview {
+  let value: unknown;
+  try {
+    value = JSON.parse(content);
+  } catch {
+    throw new Error("AI overview is not valid JSON.");
+  }
+
+  return parseReflectionOverviewValue(value, allowedActions);
+}
+
+function parseReflectionOverviewValue(
+  value: unknown,
+  allowedActions: Set<string>,
+): ReflectionOverview {
+  if (!isRecord(value)) {
+    throw new Error("AI overview must be an object.");
+  }
+
+  const observations = requiredStringArray(
+    value.observations,
+    0,
+    2,
+    20,
+    320,
+    "overview.observations",
+  );
+  if (!isRecord(value.actionSupport)) {
+    throw new Error("AI overview contains invalid action support.");
+  }
+
+  const action = requiredString(
+    value.actionSupport.action,
+    0,
+    160,
+    "overview.actionSupport.action",
+  );
+  const rationale = requiredString(
+    value.actionSupport.rationale,
+    0,
+    320,
+    "overview.actionSupport.rationale",
+  );
+  if ((action.length === 0) !== (rationale.length === 0)) {
+    throw new Error("AI overview contains incomplete action support.");
+  }
+  if (action && !allowedActions.has(action)) {
+    throw new Error("AI overview referenced an unknown action.");
+  }
+  return {
+    observations,
+    actionSupport: action ? { action, rationale } : null,
+  };
 }
 
 function requiredStringArray(
