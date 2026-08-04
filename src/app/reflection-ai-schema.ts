@@ -697,6 +697,33 @@ function parseActionSupport(value: unknown, allowedActions: Set<string>) {
   return action ? { action, rationale } : null;
 }
 
+function parseActionSupport(value: unknown, allowedActions: Set<string>) {
+  if (!isRecord(value)) {
+    throw new Error("AI analysis contains invalid action support.");
+  }
+
+  const action = requiredString(
+    value.action,
+    0,
+    160,
+    "actionSupport.action",
+  );
+  const rationale = requiredString(
+    value.rationale,
+    0,
+    320,
+    "actionSupport.rationale",
+  );
+  if ((action.length === 0) !== (rationale.length === 0)) {
+    throw new Error("AI analysis contains incomplete action support.");
+  }
+  if (action && !allowedActions.has(action)) {
+    throw new Error("AI analysis referenced an unknown action.");
+  }
+
+  return action ? { action, rationale } : null;
+}
+
 function requiredStringArray(
   value: unknown,
   minimumItems: number,

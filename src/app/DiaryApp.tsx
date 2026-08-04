@@ -1686,7 +1686,9 @@ function DayOverview({
               <div className="mt-4 border-t border-[#3a2a1d]/8 pt-4">
                 <div className="mb-4 flex justify-end">
                   <EntryActions
+                    isReanalyzing={reanalyzingReflectionId === reflection.id}
                     onDelete={() => onDelete(reflection.id)}
+                    onRetryAnalysis={() => onRetryAnalysis(reflection.id)}
                     reflectionId={reflection.id}
                   />
                 </div>
@@ -1701,10 +1703,14 @@ function DayOverview({
 }
 
 function EntryActions({
+  isReanalyzing,
   onDelete,
+  onRetryAnalysis,
   reflectionId,
 }: {
+  isReanalyzing: boolean;
   onDelete: () => void;
+  onRetryAnalysis: () => void;
   reflectionId: string;
 }) {
   return (
@@ -1716,6 +1722,14 @@ function EntryActions({
         ⋯
       </summary>
       <div className="absolute right-0 z-10 mt-2 min-w-44 rounded-2xl border border-[#3a2a1d]/10 bg-[#fffaf1] p-2 shadow-[0_16px_38px_rgba(34,26,19,0.18)]">
+        <button
+          className="w-full rounded-xl px-3 py-2 text-left text-sm font-black text-[#7a4a1d] hover:bg-[#efe5d5] disabled:cursor-wait disabled:opacity-65"
+          disabled={isReanalyzing}
+          onClick={onRetryAnalysis}
+          type="button"
+        >
+          {isReanalyzing ? "Обновляю анализ…" : "Обновить AI-анализ"}
+        </button>
         <button
           aria-describedby={`delete-note-${reflectionId}`}
           className="w-full rounded-xl px-3 py-2 text-left text-sm font-black text-[#9b3525] hover:bg-[#f5d8cc]"

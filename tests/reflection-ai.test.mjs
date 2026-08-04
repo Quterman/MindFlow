@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildInsightVerificationMessages,
   buildReflectionAnalysisMessages,
   buildReflectionOverviewMessages,
   buildReflectionVerificationMessages,
 } from "../src/app/reflection-ai-prompt.ts";
 import {
+  parseInsightVerification,
   parseReflectionAnalysis,
   parseReflectionOverview,
   parseReflectionVerification,
