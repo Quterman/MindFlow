@@ -114,6 +114,9 @@ export default function DiaryApp({
   const [fieldError, setFieldError] = useState("");
   const [todoError, setTodoError] = useState<TodoError | null>(null);
   const [updatingTodoKey, setUpdatingTodoKey] = useState<string | null>(null);
+  const [reanalyzingReflectionId, setReanalyzingReflectionId] = useState<
+    string | null
+  >(null);
   const [message, setMessage] = useState("");
   const [overviewRequest, setOverviewRequest] =
     useState<OverviewRequest>(null);
@@ -243,6 +246,10 @@ export default function DiaryApp({
     }
     if (updatingTodoKey) {
       setMessage("Дождитесь сохранения действия перед удалением записи.");
+      return;
+    }
+    if (reanalyzingReflectionId) {
+      setMessage("Дождитесь завершения повторного AI-анализа.");
       return;
     }
 
@@ -421,6 +428,42 @@ export default function DiaryApp({
     setUpdatingTodoKey(null);
   }
 
+  async function retryReflectionAnalysis(reflectionId: string) {
+    if (reanalyzingReflectionId || isSaving) {
+      return;
+    }
+
+    setReanalyzingReflectionId(reflectionId);
+    setMessage("");
+
+    try {
+      const response = await fetch(
+        `/api/reflections/${reflectionId}/reanalyze`,
+        { method: "POST" },
+      );
+      if (!response.ok) {
+        throw new Error("Reanalysis failed");
+      }
+
+      const data = (await response.json()) as { reflection: Reflection };
+      setReflections((items) =>
+        items.map((item) =>
+          item.id === data.reflection.id ? data.reflection : item,
+        ),
+      );
+      setSavedReflectionId(data.reflection.id);
+      setMessage(
+        data.reflection.analysisSource === "ai"
+          ? "AI-анализ обновлён."
+          : "Модель снова не ответила вовремя. Базовый разбор сохранён.",
+      );
+    } catch {
+      setMessage("Не получилось обновить AI-анализ. Попробуйте ещё раз.");
+    } finally {
+      setReanalyzingReflectionId(null);
+    }
+  }
+
   function toggleRecording() {
     if (isRecording) {
       recognitionRef.current?.stop();
@@ -597,7 +640,9 @@ export default function DiaryApp({
             }
             onDelete={deleteReflection}
             onOpenDate={(date) => openHistoryDate(date, "history")}
+            onRetryAnalysis={retryReflectionAnalysis}
             onToggleTodos={toggleTodos}
+            reanalyzingReflectionId={reanalyzingReflectionId}
             resultHeadingRef={resultHeadingRef}
             savedReflectionId={savedReflectionId}
             selectedDate={selectedHistoryDate}
@@ -1114,7 +1159,9 @@ function HistoryView({
   onBack,
   onDelete,
   onOpenDate,
+  onRetryAnalysis,
   onToggleTodos,
+  reanalyzingReflectionId,
   resultHeadingRef,
   savedReflectionId,
   selectedDate,
@@ -1126,7 +1173,9 @@ function HistoryView({
   onBack: () => void;
   onDelete: (reflectionId: string) => void;
   onOpenDate: (date: string) => void;
+  onRetryAnalysis: (reflectionId: string) => void;
   onToggleTodos: (targets: TodoTarget[], completed: boolean) => void;
+  reanalyzingReflectionId: string | null;
   resultHeadingRef: RefObject<HTMLHeadingElement | null>;
   savedReflectionId: string | null;
   selectedDate: string | null;
@@ -1195,7 +1244,9 @@ function HistoryView({
         <DayOverview
           entries={selectedEntries}
           onDelete={onDelete}
+          onRetryAnalysis={onRetryAnalysis}
           onToggleTodos={onToggleTodos}
+          reanalyzingReflectionId={reanalyzingReflectionId}
           todoError={todoError}
           updatingTodoKey={updatingTodoKey}
         />
@@ -1211,13 +1262,17 @@ function HistoryView({
 function DayOverview({
   entries,
   onDelete,
+  onRetryAnalysis,
   onToggleTodos,
+  reanalyzingReflectionId,
   todoError,
   updatingTodoKey,
 }: {
   entries: Reflection[];
   onDelete: (reflectionId: string) => void;
+  onRetryAnalysis: (reflectionId: string) => void;
   onToggleTodos: (targets: TodoTarget[], completed: boolean) => void;
+  reanalyzingReflectionId: string | null;
   todoError: TodoError | null;
   updatingTodoKey: string | null;
 }) {
@@ -1402,7 +1457,9 @@ function DayOverview({
               <div className="mt-4 border-t border-[#3a2a1d]/8 pt-4">
                 <div className="mb-4 flex justify-end">
                   <EntryActions
+                    isReanalyzing={reanalyzingReflectionId === reflection.id}
                     onDelete={() => onDelete(reflection.id)}
+                    onRetryAnalysis={() => onRetryAnalysis(reflection.id)}
                     reflectionId={reflection.id}
                   />
                 </div>
@@ -1417,10 +1474,14 @@ function DayOverview({
 }
 
 function EntryActions({
+  isReanalyzing,
   onDelete,
+  onRetryAnalysis,
   reflectionId,
 }: {
+  isReanalyzing: boolean;
   onDelete: () => void;
+  onRetryAnalysis: () => void;
   reflectionId: string;
 }) {
   return (
@@ -1432,6 +1493,14 @@ function EntryActions({
         ⋯
       </summary>
       <div className="absolute right-0 z-10 mt-2 min-w-44 rounded-2xl border border-[#3a2a1d]/10 bg-[#fffaf1] p-2 shadow-[0_16px_38px_rgba(34,26,19,0.18)]">
+        <button
+          className="w-full rounded-xl px-3 py-2 text-left text-sm font-black text-[#7a4a1d] hover:bg-[#efe5d5] disabled:cursor-wait disabled:opacity-65"
+          disabled={isReanalyzing}
+          onClick={onRetryAnalysis}
+          type="button"
+        >
+          {isReanalyzing ? "Обновляю анализ…" : "Обновить AI-анализ"}
+        </button>
         <button
           aria-describedby={`delete-note-${reflectionId}`}
           className="w-full rounded-xl px-3 py-2 text-left text-sm font-black text-[#9b3525] hover:bg-[#f5d8cc]"

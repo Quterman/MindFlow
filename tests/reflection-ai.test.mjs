@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildInsightVerificationMessages,
   buildReflectionAnalysisMessages,
   buildReflectionOverviewMessages,
 } from "../src/app/reflection-ai-prompt.ts";
 import {
+  parseInsightVerification,
   parseReflectionAnalysis,
   parseReflectionOverview,
+  selectVerifiedInsightTexts,
 } from "../src/app/reflection-ai-schema.ts";
 
 test("accepts a valid structured analysis grounded in history", () => {
@@ -14,8 +17,11 @@ test("accepts a valid structured analysis grounded in history", () => {
     JSON.stringify({
       summary: "Автор снова откладывает презентацию и называет следующий шаг.",
       themes: ["Подготовка презентации"],
-      insights: [
-        "Трудность повторяется в момент перехода от намерения к первому слайду.",
+      insightCandidates: [
+        {
+          text: "Трудность возникает при переходе к первому слайду.",
+          evidence: ["откладываю переход к первому слайду"],
+        },
       ],
       todos: ["Составить план из пяти слайдов"],
       repeats: [
@@ -25,18 +31,14 @@ test("accepts a valid structured analysis grounded in history", () => {
           previousDate: "2026-07-20",
         },
       ],
-      overview: {
-        observations: [
-          "Похоже, трудность возникает не в подготовке как таковой, а в переходе от намерения к первому видимому результату.",
-        ],
-        actionSupport: {
-          action: "Составить план из пяти слайдов",
-          rationale:
-            "План создаст ограниченную рамку и позволит проверить структуру до работы над деталями.",
-        },
+      actionSupport: {
+        action: "Составить план из пяти слайдов",
+        rationale:
+          "План создаст ограниченную рамку и позволит проверить структуру до работы над деталями.",
       },
     }),
     new Set(["2026-07-20"]),
+    "Я откладываю переход к первому слайду и хочу составить план из пяти слайдов.",
   );
 
   assert.equal(analysis.repeats[0].previousDate, "2026-07-20");
@@ -54,7 +56,7 @@ test("rejects a repeat that references a date outside the supplied history", () 
         JSON.stringify({
           summary: "Запись содержит достаточно материала для краткого итога.",
           themes: ["Работа"],
-          insights: ["Автор описывает конкретную рабочую трудность."],
+          insightCandidates: [],
           todos: [],
           repeats: [
             {
@@ -63,23 +65,19 @@ test("rejects a repeat that references a date outside the supplied history", () 
               previousDate: "2026-07-19",
             },
           ],
-          overview: {
-            observations: [
-              "Здесь заметна рабочая трудность, которую стоит проверить на следующем конкретном шаге.",
-            ],
-            actionSupport: {
-              action: "",
-              rationale: "",
-            },
+          actionSupport: {
+            action: "",
+            rationale: "",
           },
         }),
         new Set(["2026-07-20"]),
+        "Запись содержит достаточно материала для краткого итога.",
       ),
     /unknown previous date/,
   );
 });
 
-test("limits historical context to earlier entries and fifteen records", () => {
+test("limits historical context to current-or-earlier entries and fifteen records", () => {
   const previous = Array.from({ length: 18 }, (_, index) => {
     const day = String(23 - index).padStart(2, "0");
     return {
@@ -123,18 +121,60 @@ test("limits historical context to earlier entries and fifteen records", () => {
   );
 });
 
-test("asks the model for insights instead of a summary retelling", () => {
+test("asks the model for evidence-backed candidates without forced conflict", () => {
   const { messages } = buildReflectionAnalysisMessages({
     rawText: "Сегодня заметил, что откладываю старт, когда задача неясна.",
     entryDate: "2026-07-24",
     previous: [],
   });
 
-  assert.match(messages[0].content, /Инсайты — это не пересказ/);
-  assert.match(messages[0].content, /полезную для автора связь/);
-  assert.match(messages[0].content, /динамики между записями/);
-  assert.match(messages[0].content, /Не заставляй разные темы/);
-  assert.match(messages[0].content, /observations: \[\]/);
+  assert.match(messages[0].content, /InsightCandidates — это не пересказ/);
+  assert.match(messages[0].content, /Не стремись к определённому количеству/);
+  assert.match(messages[0].content, /не означает противоречие, конфликт/);
+  assert.match(messages[0].content, /«меньше» не превращай в «нет»/);
+  assert.match(messages[1].content, /Не формируй долгосрочный Обзор/);
+});
+
+test("verifier may reject an invented conflict", () => {
+  const candidates = [
+    {
+      id: "insight-1",
+      text: "Пауза стала периодом самостоятельной дисциплины.",
+      evidence: ["продолжил работать по трекеру"],
+    },
+    {
+      id: "insight-2",
+      text: "Автор испытывает внутренний конфликт между отдыхом и успехом.",
+      evidence: ["планировал отдохнуть"],
+    },
+  ];
+  const reviews = parseInsightVerification(
+    JSON.stringify({
+      reviews: [
+        {
+          candidateId: "insight-1",
+          verdict: "supported",
+          reason: "Выбор дисциплины прямо описан в записи.",
+        },
+        {
+          candidateId: "insight-2",
+          verdict: "rejected",
+          reason: "Текст не называет это внутренним конфликтом.",
+        },
+      ],
+    }),
+    candidates,
+  );
+
+  assert.deepEqual(selectVerifiedInsightTexts(candidates, reviews), [
+    "Пауза стала периодом самостоятельной дисциплины.",
+  ]);
+  const messages = buildInsightVerificationMessages({
+    rawText: "Планировал отдохнуть, но продолжил работать по трекеру.",
+    candidates,
+  });
+  assert.match(messages[0].content, /контраст не доказывают конфликт/);
+  assert.match(messages[0].content, /При сомнении выбирай rejected/);
 });
 
 test("builds a dedicated overview prompt only for cross-entry dynamics", () => {

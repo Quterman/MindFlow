@@ -1,9 +1,13 @@
 import type {
-  ReflectionAnalysis,
+  InsightVerificationReview,
+  ReflectionAnalysisDraft,
+  ReflectionInsightCandidate,
   ReflectionOverview,
 } from "./reflection-analysis";
 
-export const REFLECTION_ANALYSIS_VERSION = "mindflow-reflection-v3";
+export const REFLECTION_ANALYSIS_VERSION = "mindflow-reflection-v5";
+
+const MAX_INSIGHT_CANDIDATES = 8;
 
 export const reflectionOverviewSchema = {
   type: "object",
@@ -68,18 +72,34 @@ export const reflectionAnalysisSchema = {
       },
       description: "От одной до пяти конкретных тем текущей записи.",
     },
-    insights: {
+    insightCandidates: {
       type: "array",
-      minItems: 1,
-      maxItems: 3,
-      uniqueItems: true,
+      maxItems: MAX_INSIGHT_CANDIDATES,
       items: {
-        type: "string",
-        minLength: 8,
-        maxLength: 400,
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          text: {
+            type: "string",
+            minLength: 8,
+            maxLength: 400,
+          },
+          evidence: {
+            type: "array",
+            minItems: 1,
+            maxItems: 3,
+            uniqueItems: true,
+            items: {
+              type: "string",
+              minLength: 6,
+              maxLength: 240,
+            },
+          },
+        },
+        required: ["text", "evidence"],
       },
       description:
-        "Самостоятельные полезные выводы из текущей записи: связи, факторы влияния, противоречия или паттерны; не пересказ summary.",
+        "Любое количество сильных кандидатов в пределах технического лимита. Пустой массив обязателен, если доказательного инсайта нет.",
     },
     todos: {
       type: "array",
@@ -120,15 +140,57 @@ export const reflectionAnalysisSchema = {
       description:
         "Только смысловые повторы, подтверждённые одной из переданных предыдущих записей.",
     },
-    overview: reflectionOverviewSchema,
+    actionSupport: reflectionOverviewSchema.properties.actionSupport,
   },
-  required: ["summary", "themes", "insights", "todos", "repeats", "overview"],
+  required: [
+    "summary",
+    "themes",
+    "insightCandidates",
+    "todos",
+    "repeats",
+    "actionSupport",
+  ],
+} as const;
+
+export const insightVerificationSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    reviews: {
+      type: "array",
+      minItems: 1,
+      maxItems: MAX_INSIGHT_CANDIDATES,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          candidateId: {
+            type: "string",
+            minLength: 1,
+            maxLength: 40,
+          },
+          verdict: {
+            type: "string",
+            enum: ["supported", "rejected"],
+          },
+          reason: {
+            type: "string",
+            minLength: 8,
+            maxLength: 280,
+          },
+        },
+        required: ["candidateId", "verdict", "reason"],
+      },
+    },
+  },
+  required: ["reviews"],
 } as const;
 
 export function parseReflectionAnalysis(
   content: string,
   allowedPreviousDates: Set<string>,
-): ReflectionAnalysis {
+  rawText: string,
+): ReflectionAnalysisDraft {
   let value: unknown;
   try {
     value = JSON.parse(content);
@@ -142,16 +204,12 @@ export function parseReflectionAnalysis(
 
   const summary = requiredString(value.summary, 8, 700, "summary");
   const themes = requiredStringArray(value.themes, 1, 5, 2, 80, "themes");
-  const insights = requiredStringArray(
-    value.insights,
-    1,
-    3,
-    8,
-    400,
-    "insights",
+  const insightCandidates = parseInsightCandidates(
+    value.insightCandidates,
+    rawText,
   );
   const todos = requiredStringArray(value.todos, 0, 4, 6, 160, "todos");
-  const overview = parseReflectionOverviewValue(value.overview, new Set(todos));
+  const actionSupport = parseActionSupport(value.actionSupport, new Set(todos));
 
   if (!Array.isArray(value.repeats) || value.repeats.length > 3) {
     throw new Error("AI analysis contains invalid repeats.");
@@ -187,7 +245,144 @@ export function parseReflectionAnalysis(
     };
   });
 
-  return { summary, themes, insights, todos, repeats, overview };
+  return {
+    summary,
+    themes,
+    insightCandidates,
+    todos,
+    repeats,
+    overview: {
+      observations: [],
+      actionSupport,
+    },
+  };
+}
+
+export function parseInsightVerification(
+  content: string,
+  candidates: ReflectionInsightCandidate[],
+): InsightVerificationReview[] {
+  let value: unknown;
+  try {
+    value = JSON.parse(content);
+  } catch {
+    throw new Error("AI insight verification is not valid JSON.");
+  }
+
+  if (!isRecord(value) || !Array.isArray(value.reviews)) {
+    throw new Error("AI insight verification must contain reviews.");
+  }
+
+  const allowedCandidateIds = new Set(
+    candidates.map((candidate) => candidate.id),
+  );
+  if (value.reviews.length !== allowedCandidateIds.size) {
+    throw new Error("AI insight verification did not review every candidate.");
+  }
+
+  const reviews = value.reviews.map((review) => {
+    if (!isRecord(review)) {
+      throw new Error("AI insight verification contains an invalid review.");
+    }
+
+    const candidateId = requiredString(
+      review.candidateId,
+      1,
+      40,
+      "verification.candidateId",
+    );
+    if (!allowedCandidateIds.has(candidateId)) {
+      throw new Error("AI insight verification referenced an unknown candidate.");
+    }
+
+    const verdict = requiredString(
+      review.verdict,
+      1,
+      20,
+      "verification.verdict",
+    );
+    if (verdict !== "supported" && verdict !== "rejected") {
+      throw new Error("AI insight verification contains an unknown verdict.");
+    }
+
+    return {
+      candidateId,
+      verdict: verdict === "supported" ? ("supported" as const) : ("rejected" as const),
+      reason: requiredString(review.reason, 8, 280, "verification.reason"),
+    };
+  });
+
+  if (new Set(reviews.map((review) => review.candidateId)).size !== reviews.length) {
+    throw new Error("AI insight verification contains duplicate reviews.");
+  }
+
+  return reviews;
+}
+
+export function selectVerifiedInsightTexts(
+  candidates: ReflectionInsightCandidate[],
+  reviews: InsightVerificationReview[],
+) {
+  const acceptedCandidateIds = new Set(
+    reviews
+      .filter((review) => review.verdict === "supported")
+      .map((review) => review.candidateId),
+  );
+
+  return candidates
+    .filter((candidate) => acceptedCandidateIds.has(candidate.id))
+    .map((candidate) => candidate.text);
+}
+
+function parseInsightCandidates(
+  value: unknown,
+  rawText: string,
+): ReflectionInsightCandidate[] {
+  if (!Array.isArray(value) || value.length > MAX_INSIGHT_CANDIDATES) {
+    throw new Error("AI analysis contains invalid insightCandidates.");
+  }
+
+  const normalizedRawText = normalizeEvidence(rawText);
+  const candidates = value.flatMap((candidate) => {
+    if (!isRecord(candidate)) {
+      throw new Error("AI analysis contains an invalid insight candidate.");
+    }
+
+    const evidence = requiredStringArray(
+      candidate.evidence,
+      1,
+      3,
+      6,
+      240,
+      "insightCandidates.evidence",
+    );
+    if (
+      evidence.some(
+        (excerpt) => !normalizedRawText.includes(normalizeEvidence(excerpt)),
+      )
+    ) {
+      return [];
+    }
+
+    return [{
+      id: "",
+      text: requiredString(candidate.text, 8, 400, "insightCandidates.text"),
+      evidence,
+    }];
+  });
+
+  if (new Set(candidates.map((candidate) => candidate.text)).size !== candidates.length) {
+    throw new Error("AI analysis contains duplicate insightCandidates.");
+  }
+
+  return candidates.map((candidate, index) => ({
+    ...candidate,
+    id: `insight-${index + 1}`,
+  }));
+}
+
+function normalizeEvidence(value: string) {
+  return value.toLocaleLowerCase("ru").replace(/\s+/g, " ").trim();
 }
 
 export function parseReflectionOverview(
@@ -246,6 +441,33 @@ function parseReflectionOverviewValue(
     observations,
     actionSupport: action ? { action, rationale } : null,
   };
+}
+
+function parseActionSupport(value: unknown, allowedActions: Set<string>) {
+  if (!isRecord(value)) {
+    throw new Error("AI analysis contains invalid action support.");
+  }
+
+  const action = requiredString(
+    value.action,
+    0,
+    160,
+    "actionSupport.action",
+  );
+  const rationale = requiredString(
+    value.rationale,
+    0,
+    320,
+    "actionSupport.rationale",
+  );
+  if ((action.length === 0) !== (rationale.length === 0)) {
+    throw new Error("AI analysis contains incomplete action support.");
+  }
+  if (action && !allowedActions.has(action)) {
+    throw new Error("AI analysis referenced an unknown action.");
+  }
+
+  return action ? { action, rationale } : null;
 }
 
 function requiredStringArray(

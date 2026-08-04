@@ -69,6 +69,21 @@ test("selects useful primary insights instead of generic recap", () => {
   ]);
 });
 
+test("keeps every distinct day insight when no explicit limit is requested", () => {
+  const insights = buildPrimaryInsights([
+    {
+      insights: [
+        "Параллельная работа помогает использовать паузы между задачами.",
+        "Самостоятельный режим требует больше энергии, чем внешние рамки.",
+        "Реалистичный кейс облегчает переход к первому шагу.",
+        "Поездка позволяет проверить устойчивость рабочего ритма.",
+      ],
+    },
+  ]);
+
+  assert.equal(insights.length, 4);
+});
+
 test("keeps only one insight per confirmed pattern without a fixed total", () => {
   const insights = buildImportantEntryInsights({
     insights: [

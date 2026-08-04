@@ -4,7 +4,7 @@ import { createReflection, listReflections } from "../../reflection-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 35;
+export const maxDuration = 60;
 
 const MAX_REFLECTION_LENGTH = 12_000;
 

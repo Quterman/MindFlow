@@ -121,7 +121,7 @@ export function buildDaySummary(entries: DaySummaryReflection[]) {
 
 export function buildPrimaryInsights(
   entries: Pick<DaySummaryReflection, "insights">[],
-  limit = 3,
+  limit = Number.POSITIVE_INFINITY,
 ) {
   const candidates = uniqueStrings(
     entries.flatMap((entry) => entry.insights),

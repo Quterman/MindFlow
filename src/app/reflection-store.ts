@@ -56,7 +56,7 @@ export async function createReflection(
 ) {
   const entryDate = input.entryDate || today();
   const previous = (await listReflections(supabase, userId)).filter(
-    (item) => item.entryDate < entryDate,
+    (item) => item.entryDate <= entryDate,
   );
   const analysis = await analyzeReflection(input.rawText, previous, entryDate);
   const { data, error } = await supabase
@@ -124,7 +124,7 @@ export async function updateReflection(
 
   const nextDate = input.entryDate || existing.entryDate;
   const previous = (await listReflections(supabase, userId)).filter(
-    (item) => item.id !== input.id && item.entryDate < nextDate,
+    (item) => item.id !== input.id && item.entryDate <= nextDate,
   );
   const analysis = await analyzeReflection(input.rawText, previous, nextDate);
   const completedTodos = existing.completedTodos.filter((todo) =>
@@ -250,6 +250,55 @@ export async function generateAndStoreReflectionOverview(
     .from("mindflow_entries")
     .update({
       overview,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .eq("user_id", userId)
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data ? rowToReflection(data as ReflectionRow) : null;
+}
+
+export async function reanalyzeStoredReflection(
+  supabase: SupabaseClient,
+  userId: string,
+  id: string,
+) {
+  const existing = await findReflection(supabase, userId, id);
+  if (!existing) {
+    return null;
+  }
+
+  const previous = (await listReflections(supabase, userId)).filter(
+    (item) => item.id !== id && item.entryDate <= existing.entryDate,
+  );
+  const analysis = await analyzeReflection(
+    existing.rawText,
+    previous,
+    existing.entryDate,
+  );
+  const completedTodos = existing.completedTodos.filter((todo) =>
+    analysis.todos.includes(todo),
+  );
+  const { data, error } = await supabase
+    .from("mindflow_entries")
+    .update({
+      analysis_generated_at: analysis.analysisGeneratedAt,
+      analysis_model: analysis.analysisModel,
+      analysis_source: analysis.analysisSource,
+      analysis_version: analysis.analysisVersion,
+      completed_todos: completedTodos,
+      insights: analysis.insights,
+      overview: analysis.overview,
+      repeats: analysis.repeats,
+      summary: analysis.summary,
+      themes: analysis.themes,
+      todos: analysis.todos,
       updated_at: new Date().toISOString(),
     })
     .eq("id", id)
