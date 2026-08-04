@@ -65,6 +65,63 @@ export type OverviewSnapshot = {
   };
 };
 
+export type OverviewMaturity = "collecting" | "early" | "established";
+export const OVERVIEW_ANALYSIS_LIMIT = 30;
+
+type OverviewSourceReflection = {
+  id: string;
+  entryDate: string;
+  createdAt: string;
+  rawText: string;
+  summary: string;
+  themes: string[];
+  insights: string[];
+  todos: string[];
+  completedTodos: string[];
+};
+
+export function getOverviewMaturity(entryCount: number): OverviewMaturity {
+  if (entryCount < 3) {
+    return "collecting";
+  }
+  if (entryCount < 8) {
+    return "early";
+  }
+  return "established";
+}
+
+export function buildOverviewSourceSignature(
+  entries: OverviewSourceReflection[],
+) {
+  const source = JSON.stringify(
+    [...entries]
+      .sort(
+        (left, right) =>
+          right.entryDate.localeCompare(left.entryDate) ||
+          right.createdAt.localeCompare(left.createdAt),
+      )
+      .slice(0, OVERVIEW_ANALYSIS_LIMIT)
+      .map((entry) => ({
+        id: entry.id,
+        entryDate: entry.entryDate,
+        rawText: entry.rawText,
+        summary: entry.summary,
+        themes: entry.themes,
+        insights: entry.insights,
+        todos: entry.todos,
+        completedTodos: entry.completedTodos,
+      })),
+  );
+  let hash = 2_166_136_261;
+
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+
+  return `overview-v1-${Math.min(entries.length, OVERVIEW_ANALYSIS_LIMIT)}-${(hash >>> 0).toString(36)}`;
+}
+
 export function buildDaySummary(entries: DaySummaryReflection[]) {
   if (entries.length === 0) {
     return "В этот день записей пока нет.";
@@ -121,7 +178,7 @@ export function buildDaySummary(entries: DaySummaryReflection[]) {
 
 export function buildPrimaryInsights(
   entries: Pick<DaySummaryReflection, "insights">[],
-  limit = 3,
+  limit = Number.POSITIVE_INFINITY,
 ) {
   const candidates = uniqueStrings(
     entries.flatMap((entry) => entry.insights),

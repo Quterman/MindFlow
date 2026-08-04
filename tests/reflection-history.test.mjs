@@ -4,11 +4,49 @@ import {
   buildCalendarDates,
   buildDaySummary,
   buildImportantEntryInsights,
+  buildOverviewSourceSignature,
   buildOverviewSnapshot,
   buildPrimaryInsights,
+  getOverviewMaturity,
   groupDayActions,
   shiftMonth,
 } from "../src/app/reflection-history.ts";
+
+test("changes overview maturity by total reflection count", () => {
+  assert.equal(getOverviewMaturity(0), "collecting");
+  assert.equal(getOverviewMaturity(2), "collecting");
+  assert.equal(getOverviewMaturity(3), "early");
+  assert.equal(getOverviewMaturity(7), "early");
+  assert.equal(getOverviewMaturity(8), "established");
+});
+
+test("changes the overview source when an action or entry changes", () => {
+  const entries = [
+    {
+      id: "one",
+      entryDate: "2026-07-24",
+      createdAt: "2026-07-24T12:00:00.000Z",
+      rawText: "Планирую уточнить критерии.",
+      summary: "Нужно уточнить критерии.",
+      themes: ["Работа"],
+      insights: ["Без критерия трудно оценить готовность."],
+      todos: ["Уточнить критерии"],
+      completedTodos: [],
+    },
+  ];
+  const initial = buildOverviewSourceSignature(entries);
+  const completed = buildOverviewSourceSignature([
+    { ...entries[0], completedTodos: ["Уточнить критерии"] },
+  ]);
+  const withAnotherEntry = buildOverviewSourceSignature([
+    ...entries,
+    { ...entries[0], id: "two", createdAt: "2026-07-24T13:00:00.000Z" },
+  ]);
+
+  assert.notEqual(initial, completed);
+  assert.notEqual(initial, withAnotherEntry);
+  assert.equal(initial, buildOverviewSourceSignature([...entries]));
+});
 
 test("builds a day summary from all entries without another AI call", () => {
   const summary = buildDaySummary([
@@ -67,6 +105,21 @@ test("selects useful primary insights instead of generic recap", () => {
     "Повторяется откладывание первого шага: похожий стопор уже появлялся раньше.",
     "Усталость влияет на решения — важно отделить нехватку ресурса от избегания неопределённости.",
   ]);
+});
+
+test("keeps every distinct day insight when no explicit limit is requested", () => {
+  const insights = buildPrimaryInsights([
+    {
+      insights: [
+        "Параллельная работа помогает использовать паузы между задачами.",
+        "Самостоятельный режим требует больше энергии, чем внешние рамки.",
+        "Реалистичный кейс облегчает переход к первому шагу.",
+        "Поездка позволяет проверить устойчивость рабочего ритма.",
+      ],
+    },
+  ]);
+
+  assert.equal(insights.length, 4);
 });
 
 test("keeps only one insight per confirmed pattern without a fixed total", () => {

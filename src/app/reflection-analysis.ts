@@ -1,7 +1,16 @@
 export type AnalysisSource = "ai" | "fallback" | "legacy";
 
+export type OverviewSignal = {
+  kind: "unfinished_intention" | "recurring_blocker" | "untested_hypothesis";
+  title: string;
+  finding: string;
+  evidenceReflectionIds: string[];
+  recommendation: string | null;
+};
+
 export type ReflectionOverview = {
-  observations: string[];
+  signals: OverviewSignal[] | null;
+  signalsSource: string | null;
   actionSupport: {
     action: string;
     rationale: string;
@@ -19,6 +28,29 @@ export type ReflectionAnalysis = {
     previousDate: string;
   }>;
   overview: ReflectionOverview;
+};
+
+export type ReflectionInsightCandidate = {
+  id: string;
+  text: string;
+  evidence: string[];
+};
+
+export type ReflectionAnalysisDraft = Omit<ReflectionAnalysis, "insights"> & {
+  insightCandidates: ReflectionInsightCandidate[];
+};
+
+export type InsightVerificationReview = {
+  candidateId: string;
+  verdict: "supported" | "rejected";
+  reason: string;
+};
+
+export type ActionVerificationReview = {
+  candidateId: string;
+  verdict: "supported" | "rejected";
+  normalizedAction: string;
+  reason: string;
 };
 
 export type Reflection = {
@@ -64,7 +96,7 @@ export function analyzeReflectionWithRules(
       ),
     ).sort();
 
-    if (matchingDates.length === 0) {
+    if (matchingDates.length < 2) {
       return [];
     }
 
@@ -80,60 +112,19 @@ export function analyzeReflectionWithRules(
   const summary =
     sentences.slice(0, 2).join(" ") ||
     "Запись сохранена. Текста пока мало, чтобы сделать подробное summary.";
-  const insights = buildInsights({ themes, patterns, repeats, todos });
 
   return {
     summary,
     themes,
-    insights,
+    insights: [],
     todos,
     repeats,
     overview: {
-      observations: [],
+      signals: null,
+      signalsSource: null,
       actionSupport: null,
     },
   };
-}
-
-function buildInsights(input: {
-  themes: string[];
-  patterns: Array<{ title: string }>;
-  repeats: Array<{ title: string; previousDate: string }>;
-  todos: string[];
-}) {
-  const insights: string[] = [];
-
-  if (input.repeats.length > 0) {
-    insights.push(
-      `Повторяется тема “${input.repeats[0].title}”. Она уже появлялась ${formatDate(input.repeats[0].previousDate)} — это стоит вынести из фона и разобрать отдельно.`,
-    );
-  }
-
-  if (input.patterns.some((pattern) => pattern.title.includes("откладывание"))) {
-    insights.push(
-      "В записи заметен стопор перед первым шагом: движение по задаче важно, но старт снова переносится.",
-    );
-  }
-
-  if (input.themes.includes("Усталость и перегруз")) {
-    insights.push(
-      "Усталость звучит как фактор, который влияет на решения. Важно отделить реальную нехватку ресурса от избегания неопределённости.",
-    );
-  }
-
-  if (input.todos.length === 0) {
-    insights.push(
-      "Конкретных шагов к действию в этой записи не найдено — сейчас её ценность скорее в фиксации состояния и темы.",
-    );
-  }
-
-  if (insights.length === 0) {
-    insights.push(
-      "Запись помогает зафиксировать текущий фокус. Если тема появится снова, дневник подсветит её как повтор.",
-    );
-  }
-
-  return insights;
 }
 
 function detectThemes(text: string) {
@@ -268,11 +259,4 @@ function splitSentences(text: string) {
     .split(/(?<=[.!?])\s+|\n+/)
     .map((sentence) => sentence.trim())
     .filter(Boolean);
-}
-
-function formatDate(date: string) {
-  return new Intl.DateTimeFormat("ru", {
-    day: "numeric",
-    month: "long",
-  }).format(new Date(`${date}T12:00:00`));
 }

@@ -1,48 +1,74 @@
 import type {
-  ReflectionAnalysis,
-  ReflectionOverview,
+  ActionVerificationReview,
+  InsightVerificationReview,
+  OverviewSignal,
+  ReflectionAnalysisDraft,
+  ReflectionInsightCandidate,
 } from "./reflection-analysis";
 
-export const REFLECTION_ANALYSIS_VERSION = "mindflow-reflection-v3";
+export const REFLECTION_ANALYSIS_VERSION = "mindflow-reflection-v6";
+
+const MAX_INSIGHT_CANDIDATES = 8;
 
 export const reflectionOverviewSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
-    observations: {
+    signals: {
       type: "array",
-      minItems: 0,
-      maxItems: 2,
-      uniqueItems: true,
+      maxItems: 3,
       items: {
-        type: "string",
-        minLength: 20,
-        maxLength: 320,
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          kind: {
+            type: "string",
+            enum: [
+              "unfinished_intention",
+              "recurring_blocker",
+              "untested_hypothesis",
+            ],
+          },
+          title: {
+            type: "string",
+            minLength: 4,
+            maxLength: 100,
+          },
+          finding: {
+            type: "string",
+            minLength: 20,
+            maxLength: 420,
+          },
+          evidenceReflectionIds: {
+            type: "array",
+            minItems: 3,
+            maxItems: 8,
+            uniqueItems: true,
+            items: {
+              type: "string",
+              minLength: 1,
+              maxLength: 80,
+            },
+          },
+          recommendation: {
+            type: "string",
+            minLength: 0,
+            maxLength: 320,
+          },
+        },
+        required: [
+          "kind",
+          "title",
+          "finding",
+          "evidenceReflectionIds",
+          "recommendation",
+        ],
       },
       description:
-        "До двух коротких наблюдений только об изменении, повторе или незавершённой линии между текущей и предыдущими записями. Пустой массив, если подтверждённой динамики нет.",
-    },
-    actionSupport: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        action: {
-          type: "string",
-          minLength: 0,
-          maxLength: 160,
-        },
-        rationale: {
-          type: "string",
-          minLength: 0,
-          maxLength: 320,
-        },
-      },
-      required: ["action", "rationale"],
-      description:
-        "Самое полезное действие из todos текущей записи и объяснение его рычага. Оба поля пустые, если выделить главный шаг нельзя.",
+        "До трёх доказательных сигналов. Пустой массив обязателен, если подтверждённого полезного сигнала нет.",
     },
   },
-  required: ["observations", "actionSupport"],
+  required: ["signals"],
 } as const;
 
 export const reflectionAnalysisSchema = {
@@ -68,18 +94,34 @@ export const reflectionAnalysisSchema = {
       },
       description: "От одной до пяти конкретных тем текущей записи.",
     },
-    insights: {
+    insightCandidates: {
       type: "array",
-      minItems: 1,
-      maxItems: 3,
-      uniqueItems: true,
+      maxItems: MAX_INSIGHT_CANDIDATES,
       items: {
-        type: "string",
-        minLength: 8,
-        maxLength: 400,
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          text: {
+            type: "string",
+            minLength: 8,
+            maxLength: 400,
+          },
+          evidence: {
+            type: "array",
+            minItems: 1,
+            maxItems: 3,
+            uniqueItems: true,
+            items: {
+              type: "string",
+              minLength: 6,
+              maxLength: 240,
+            },
+          },
+        },
+        required: ["text", "evidence"],
       },
       description:
-        "Самостоятельные полезные выводы из текущей записи: связи, факторы влияния, противоречия или паттерны; не пересказ summary.",
+        "Любое количество сильных кандидатов в пределах технического лимита. Пустой массив обязателен, если доказательного инсайта нет.",
     },
     todos: {
       type: "array",
@@ -120,15 +162,111 @@ export const reflectionAnalysisSchema = {
       description:
         "Только смысловые повторы, подтверждённые одной из переданных предыдущих записей.",
     },
-    overview: reflectionOverviewSchema,
+    actionSupport: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        action: {
+          type: "string",
+          minLength: 0,
+          maxLength: 160,
+        },
+        rationale: {
+          type: "string",
+          minLength: 0,
+          maxLength: 320,
+        },
+      },
+      required: ["action", "rationale"],
+      description:
+        "Самое полезное действие из todos текущей записи и объяснение его эффекта. Оба поля пустые, если выделить главный шаг нельзя.",
+    },
   },
-  required: ["summary", "themes", "insights", "todos", "repeats", "overview"],
+  required: [
+    "summary",
+    "themes",
+    "insightCandidates",
+    "todos",
+    "repeats",
+    "actionSupport",
+  ],
+} as const;
+
+export const reflectionVerificationSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    reviews: {
+      type: "array",
+      minItems: 0,
+      maxItems: MAX_INSIGHT_CANDIDATES,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          candidateId: {
+            type: "string",
+            minLength: 1,
+            maxLength: 40,
+          },
+          verdict: {
+            type: "string",
+            enum: ["supported", "rejected"],
+          },
+          reason: {
+            type: "string",
+            minLength: 8,
+            maxLength: 280,
+          },
+        },
+        required: ["candidateId", "verdict", "reason"],
+      },
+    },
+    actionReviews: {
+      type: "array",
+      minItems: 0,
+      maxItems: 4,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          candidateId: {
+            type: "string",
+            minLength: 1,
+            maxLength: 40,
+          },
+          verdict: {
+            type: "string",
+            enum: ["supported", "rejected"],
+          },
+          normalizedAction: {
+            type: "string",
+            minLength: 0,
+            maxLength: 160,
+          },
+          reason: {
+            type: "string",
+            minLength: 8,
+            maxLength: 280,
+          },
+        },
+        required: [
+          "candidateId",
+          "verdict",
+          "normalizedAction",
+          "reason",
+        ],
+      },
+    },
+  },
+  required: ["reviews", "actionReviews"],
 } as const;
 
 export function parseReflectionAnalysis(
   content: string,
   allowedPreviousDates: Set<string>,
-): ReflectionAnalysis {
+  rawText: string,
+): ReflectionAnalysisDraft {
   let value: unknown;
   try {
     value = JSON.parse(content);
@@ -142,16 +280,12 @@ export function parseReflectionAnalysis(
 
   const summary = requiredString(value.summary, 8, 700, "summary");
   const themes = requiredStringArray(value.themes, 1, 5, 2, 80, "themes");
-  const insights = requiredStringArray(
-    value.insights,
-    1,
-    3,
-    8,
-    400,
-    "insights",
+  const insightCandidates = parseInsightCandidates(
+    value.insightCandidates,
+    rawText,
   );
   const todos = requiredStringArray(value.todos, 0, 4, 6, 160, "todos");
-  const overview = parseReflectionOverviewValue(value.overview, new Set(todos));
+  const actionSupport = parseActionSupport(value.actionSupport, new Set(todos));
 
   if (!Array.isArray(value.repeats) || value.repeats.length > 3) {
     throw new Error("AI analysis contains invalid repeats.");
@@ -187,13 +321,284 @@ export function parseReflectionAnalysis(
     };
   });
 
-  return { summary, themes, insights, todos, repeats, overview };
+  return {
+    summary,
+    themes,
+    insightCandidates,
+    todos,
+    repeats,
+    overview: {
+      signals: null,
+      signalsSource: null,
+      actionSupport,
+    },
+  };
+}
+
+export function parseReflectionVerification(
+  content: string,
+  insightCandidates: ReflectionInsightCandidate[],
+  actionCandidates: string[],
+): {
+  insightReviews: InsightVerificationReview[];
+  actionReviews: ActionVerificationReview[];
+} {
+  let value: unknown;
+  try {
+    value = JSON.parse(content);
+  } catch {
+    throw new Error("AI reflection verification is not valid JSON.");
+  }
+
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.reviews) ||
+    !Array.isArray(value.actionReviews)
+  ) {
+    throw new Error("AI reflection verification must contain all reviews.");
+  }
+
+  const allowedCandidateIds = new Set(
+    insightCandidates.map((candidate) => candidate.id),
+  );
+  if (value.reviews.length !== allowedCandidateIds.size) {
+    throw new Error("AI insight verification did not review every candidate.");
+  }
+
+  const insightReviews = value.reviews.map((review) => {
+    if (!isRecord(review)) {
+      throw new Error("AI insight verification contains an invalid review.");
+    }
+
+    const candidateId = requiredString(
+      review.candidateId,
+      1,
+      40,
+      "verification.candidateId",
+    );
+    if (!allowedCandidateIds.has(candidateId)) {
+      throw new Error("AI insight verification referenced an unknown candidate.");
+    }
+
+    const verdict = requiredString(
+      review.verdict,
+      1,
+      20,
+      "verification.verdict",
+    );
+    if (verdict !== "supported" && verdict !== "rejected") {
+      throw new Error("AI insight verification contains an unknown verdict.");
+    }
+    const normalizedVerdict =
+      verdict === "supported" ? ("supported" as const) : ("rejected" as const);
+
+    return {
+      candidateId,
+      verdict: normalizedVerdict,
+      reason: requiredString(
+        review.reason,
+        8,
+        280,
+        "verification.reason",
+      ),
+    };
+  });
+
+  if (
+    new Set(insightReviews.map((review) => review.candidateId)).size !==
+    insightReviews.length
+  ) {
+    throw new Error("AI insight verification contains duplicate reviews.");
+  }
+
+  const allowedActionIds = new Set(
+    actionCandidates.map((_, index) => `action-${index + 1}`),
+  );
+  if (value.actionReviews.length !== allowedActionIds.size) {
+    throw new Error("AI action verification did not review every candidate.");
+  }
+
+  const actionReviews = value.actionReviews.map((review) => {
+    if (!isRecord(review)) {
+      throw new Error("AI action verification contains an invalid review.");
+    }
+
+    const candidateId = requiredString(
+      review.candidateId,
+      1,
+      40,
+      "actionVerification.candidateId",
+    );
+    if (!allowedActionIds.has(candidateId)) {
+      throw new Error("AI action verification referenced an unknown candidate.");
+    }
+
+    const verdict = requiredString(
+      review.verdict,
+      1,
+      20,
+      "actionVerification.verdict",
+    );
+    if (verdict !== "supported" && verdict !== "rejected") {
+      throw new Error("AI action verification contains an unknown verdict.");
+    }
+
+    const normalizedAction = requiredString(
+      review.normalizedAction,
+      verdict === "supported" ? 6 : 0,
+      verdict === "supported" ? 160 : 0,
+      "actionVerification.normalizedAction",
+    );
+
+    return {
+      candidateId,
+      verdict:
+        verdict === "supported"
+          ? ("supported" as const)
+          : ("rejected" as const),
+      normalizedAction,
+      reason: requiredString(
+        review.reason,
+        8,
+        280,
+        "actionVerification.reason",
+      ),
+    };
+  });
+
+  if (
+    new Set(actionReviews.map((review) => review.candidateId)).size !==
+    actionReviews.length
+  ) {
+    throw new Error("AI action verification contains duplicate reviews.");
+  }
+
+  return { insightReviews, actionReviews };
+}
+
+export function selectVerifiedInsightTexts(
+  candidates: ReflectionInsightCandidate[],
+  reviews: InsightVerificationReview[],
+) {
+  const acceptedCandidateIds = new Set(
+    reviews
+      .filter((review) => review.verdict === "supported")
+      .map((review) => review.candidateId),
+  );
+
+  return candidates
+    .filter((candidate) => acceptedCandidateIds.has(candidate.id))
+    .map((candidate) => candidate.text);
+}
+
+export function selectVerifiedTodos(
+  candidates: string[],
+  reviews: ActionVerificationReview[],
+) {
+  const actionsByCandidateId = new Map(
+    reviews
+      .filter((review) => review.verdict === "supported")
+      .map((review) => [review.candidateId, review.normalizedAction]),
+  );
+
+  return Array.from(
+    new Set(
+      candidates.flatMap((_, index) => {
+        const action = actionsByCandidateId.get(`action-${index + 1}`);
+        return action ? [action] : [];
+      }),
+    ),
+  );
+}
+
+export function selectVerifiedActionSupport(
+  actionSupport: ReflectionAnalysisDraft["overview"]["actionSupport"],
+  candidates: string[],
+  reviews: ActionVerificationReview[],
+) {
+  if (!actionSupport) {
+    return null;
+  }
+
+  const candidateIndex = candidates.indexOf(actionSupport.action);
+  if (candidateIndex < 0) {
+    return null;
+  }
+
+  const review = reviews.find(
+    (item) =>
+      item.candidateId === `action-${candidateIndex + 1}` &&
+      item.verdict === "supported",
+  );
+
+  return review
+    ? {
+        action: review.normalizedAction,
+        rationale: actionSupport.rationale,
+      }
+    : null;
+}
+
+function parseInsightCandidates(
+  value: unknown,
+  rawText: string,
+): ReflectionInsightCandidate[] {
+  if (!Array.isArray(value) || value.length > MAX_INSIGHT_CANDIDATES) {
+    throw new Error("AI analysis contains invalid insightCandidates.");
+  }
+
+  const normalizedRawText = normalizeEvidence(rawText);
+  const candidates = value.flatMap((candidate) => {
+    if (!isRecord(candidate)) {
+      throw new Error("AI analysis contains an invalid insight candidate.");
+    }
+
+    const evidence = requiredStringArray(
+      candidate.evidence,
+      1,
+      3,
+      6,
+      240,
+      "insightCandidates.evidence",
+    );
+    if (
+      evidence.some(
+        (excerpt) => !normalizedRawText.includes(normalizeEvidence(excerpt)),
+      )
+    ) {
+      return [];
+    }
+
+    return [{
+      id: "",
+      text: requiredString(
+        candidate.text,
+        8,
+        400,
+        "insightCandidates.text",
+      ),
+      evidence,
+    }];
+  });
+
+  if (new Set(candidates.map((candidate) => candidate.text)).size !== candidates.length) {
+    throw new Error("AI analysis contains duplicate insightCandidates.");
+  }
+
+  return candidates.map((candidate, index) => ({
+    ...candidate,
+    id: `insight-${index + 1}`,
+  }));
+}
+
+function normalizeEvidence(value: string) {
+  return value.toLocaleLowerCase("ru").replace(/\s+/g, " ").trim();
 }
 
 export function parseReflectionOverview(
   content: string,
-  allowedActions: Set<string>,
-): ReflectionOverview {
+  allowedReflectionIds: Set<string>,
+): OverviewSignal[] {
   let value: unknown;
   try {
     value = JSON.parse(content);
@@ -201,51 +606,95 @@ export function parseReflectionOverview(
     throw new Error("AI overview is not valid JSON.");
   }
 
-  return parseReflectionOverviewValue(value, allowedActions);
+  if (!isRecord(value) || !Array.isArray(value.signals)) {
+    throw new Error("AI overview must contain signals.");
+  }
+  if (value.signals.length > 3) {
+    throw new Error("AI overview contains too many signals.");
+  }
+
+  return value.signals.map((signal) =>
+    parseOverviewSignal(signal, allowedReflectionIds),
+  );
 }
 
-function parseReflectionOverviewValue(
+function parseOverviewSignal(
   value: unknown,
-  allowedActions: Set<string>,
-): ReflectionOverview {
+  allowedReflectionIds: Set<string>,
+): OverviewSignal {
   if (!isRecord(value)) {
-    throw new Error("AI overview must be an object.");
+    throw new Error("AI overview contains an invalid signal.");
   }
 
-  const observations = requiredStringArray(
-    value.observations,
-    0,
-    2,
-    20,
-    320,
-    "overview.observations",
+  const kind = requiredString(value.kind, 1, 40, "overview.signal.kind");
+  if (
+    kind !== "unfinished_intention" &&
+    kind !== "recurring_blocker" &&
+    kind !== "untested_hypothesis"
+  ) {
+    throw new Error("AI overview contains an unknown signal kind.");
+  }
+  const evidenceReflectionIds = requiredStringArray(
+    value.evidenceReflectionIds,
+    3,
+    8,
+    1,
+    80,
+    "overview.signal.evidenceReflectionIds",
   );
-  if (!isRecord(value.actionSupport)) {
-    throw new Error("AI overview contains invalid action support.");
+  if (
+    evidenceReflectionIds.some(
+      (reflectionId) => !allowedReflectionIds.has(reflectionId),
+    )
+  ) {
+    throw new Error("AI overview referenced an unknown reflection.");
   }
 
+  const recommendation = requiredString(
+    value.recommendation,
+    0,
+    320,
+    "overview.signal.recommendation",
+  );
+
+  return {
+    kind,
+    title: requiredString(value.title, 4, 100, "overview.signal.title"),
+    finding: requiredString(
+      value.finding,
+      20,
+      420,
+      "overview.signal.finding",
+    ),
+    evidenceReflectionIds,
+    recommendation: recommendation || null,
+  };
+}
+
+function parseActionSupport(value: unknown, allowedActions: Set<string>) {
+  if (!isRecord(value)) {
+    throw new Error("AI analysis contains invalid action support.");
+  }
   const action = requiredString(
-    value.actionSupport.action,
+    value.action,
     0,
     160,
-    "overview.actionSupport.action",
+    "actionSupport.action",
   );
   const rationale = requiredString(
-    value.actionSupport.rationale,
+    value.rationale,
     0,
     320,
-    "overview.actionSupport.rationale",
+    "actionSupport.rationale",
   );
   if ((action.length === 0) !== (rationale.length === 0)) {
-    throw new Error("AI overview contains incomplete action support.");
+    throw new Error("AI analysis contains incomplete action support.");
   }
   if (action && !allowedActions.has(action)) {
-    throw new Error("AI overview referenced an unknown action.");
+    throw new Error("AI analysis referenced an unknown action.");
   }
-  return {
-    observations,
-    actionSupport: action ? { action, rationale } : null,
-  };
+
+  return action ? { action, rationale } : null;
 }
 
 function requiredStringArray(

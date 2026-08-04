@@ -10,6 +10,7 @@ import {
   analyzeReflection,
   generateReflectionOverview,
 } from "./reflection-ai";
+import { buildOverviewSourceSignature } from "./reflection-history";
 
 type ReflectionRow = {
   id: string;
@@ -56,7 +57,7 @@ export async function createReflection(
 ) {
   const entryDate = input.entryDate || today();
   const previous = (await listReflections(supabase, userId)).filter(
-    (item) => item.entryDate < entryDate,
+    (item) => item.entryDate <= entryDate,
   );
   const analysis = await analyzeReflection(input.rawText, previous, entryDate);
   const { data, error } = await supabase
@@ -124,7 +125,7 @@ export async function updateReflection(
 
   const nextDate = input.entryDate || existing.entryDate;
   const previous = (await listReflections(supabase, userId)).filter(
-    (item) => item.id !== input.id && item.entryDate < nextDate,
+    (item) => item.id !== input.id && item.entryDate <= nextDate,
   );
   const analysis = await analyzeReflection(input.rawText, previous, nextDate);
   const completedTodos = existing.completedTodos.filter((todo) =>
@@ -238,14 +239,28 @@ export async function generateAndStoreReflectionOverview(
   if (!existing) {
     return null;
   }
-  if (existing.overview) {
+  const eligibleEntries = (await listReflections(supabase, userId)).filter(
+    (item) => item.entryDate <= existing.entryDate,
+  );
+  if (eligibleEntries.length < 3) {
     return existing;
   }
 
-  const previous = (await listReflections(supabase, userId)).filter(
-    (item) => item.id !== id && item.entryDate < existing.entryDate,
-  );
-  const overview = await generateReflectionOverview(existing, previous);
+  const signalsSource = buildOverviewSourceSignature(eligibleEntries);
+  if (
+    existing.overview?.signals !== null &&
+    existing.overview?.signalsSource === signalsSource
+  ) {
+    return existing;
+  }
+
+  const previous = eligibleEntries.filter((item) => item.id !== id);
+  const signals = await generateReflectionOverview(existing, previous);
+  const overview: ReflectionOverview = {
+    signals,
+    signalsSource,
+    actionSupport: existing.overview?.actionSupport || null,
+  };
   const { data, error } = await supabase
     .from("mindflow_entries")
     .update({
@@ -264,7 +279,56 @@ export async function generateAndStoreReflectionOverview(
   return data ? rowToReflection(data as ReflectionRow) : null;
 }
 
-async function findReflection(
+export async function reanalyzeStoredReflection(
+  supabase: SupabaseClient,
+  userId: string,
+  id: string,
+) {
+  const existing = await findReflection(supabase, userId, id);
+  if (!existing) {
+    return null;
+  }
+
+  const previous = (await listReflections(supabase, userId)).filter(
+    (item) => item.id !== id && item.entryDate <= existing.entryDate,
+  );
+  const analysis = await analyzeReflection(
+    existing.rawText,
+    previous,
+    existing.entryDate,
+  );
+  const completedTodos = existing.completedTodos.filter((todo) =>
+    analysis.todos.includes(todo),
+  );
+  const { data, error } = await supabase
+    .from("mindflow_entries")
+    .update({
+      analysis_generated_at: analysis.analysisGeneratedAt,
+      analysis_model: analysis.analysisModel,
+      analysis_source: analysis.analysisSource,
+      analysis_version: analysis.analysisVersion,
+      completed_todos: completedTodos,
+      insights: analysis.insights,
+      overview: analysis.overview,
+      repeats: analysis.repeats,
+      summary: analysis.summary,
+      themes: analysis.themes,
+      todos: analysis.todos,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .eq("user_id", userId)
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data ? rowToReflection(data as ReflectionRow) : null;
+}
+
+export async function findReflection(
   supabase: SupabaseClient,
   userId: string,
   id: string,
@@ -315,16 +379,21 @@ function overviewValue(
   if (
     typeof value !== "object" ||
     value === null ||
-    Array.isArray(value) ||
-    !("observations" in value) ||
-    !Array.isArray(value.observations)
+    Array.isArray(value)
   ) {
     return null;
   }
 
-  const observations = value.observations.filter(
-    (item): item is string => typeof item === "string" && item.trim().length > 0,
-  );
+  const signals =
+    "signals" in value && Array.isArray(value.signals)
+      ? overviewSignalArray(value.signals)
+      : null;
+  const signalsSource =
+    "signalsSource" in value &&
+    typeof value.signalsSource === "string" &&
+    value.signalsSource.length > 0
+      ? value.signalsSource
+      : null;
 
   const actionSupport =
     "actionSupport" in value &&
@@ -344,7 +413,53 @@ function overviewValue(
         }
       : null;
 
-  return { observations, actionSupport };
+  return { signals, signalsSource, actionSupport };
+}
+
+function overviewSignalArray(
+  value: unknown[],
+): NonNullable<ReflectionOverview["signals"]> {
+  return value.flatMap((item) => {
+    if (
+      typeof item !== "object" ||
+      item === null ||
+      Array.isArray(item) ||
+      !("kind" in item) ||
+      (item.kind !== "unfinished_intention" &&
+        item.kind !== "recurring_blocker" &&
+        item.kind !== "untested_hypothesis") ||
+      !("title" in item) ||
+      typeof item.title !== "string" ||
+      !("finding" in item) ||
+      typeof item.finding !== "string" ||
+      !("evidenceReflectionIds" in item) ||
+      !Array.isArray(item.evidenceReflectionIds)
+    ) {
+      return [];
+    }
+
+    const evidenceReflectionIds = item.evidenceReflectionIds.filter(
+      (reflectionId): reflectionId is string => typeof reflectionId === "string",
+    );
+    if (evidenceReflectionIds.length < 3) {
+      return [];
+    }
+
+    return [
+      {
+        kind: item.kind,
+        title: item.title.trim(),
+        finding: item.finding.trim(),
+        evidenceReflectionIds,
+        recommendation:
+          "recommendation" in item &&
+          typeof item.recommendation === "string" &&
+          item.recommendation.trim().length > 0
+            ? item.recommendation.trim()
+            : null,
+      },
+    ];
+  });
 }
 
 function stringArray(value: unknown) {

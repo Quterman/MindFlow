@@ -9,10 +9,16 @@ import {
   type RefObject,
 } from "react";
 import {
-  buildOverviewSnapshot,
+  buildOverviewSourceSignature,
   buildPrimaryInsights,
+  getOverviewMaturity,
   groupDayActions,
+  OVERVIEW_ANALYSIS_LIMIT,
 } from "./reflection-history";
+import {
+  buildTodoAppImportPayload,
+  getPrimaryTodoSource,
+} from "./todo-app-import";
 
 type Reflection = {
   id: string;
@@ -30,7 +36,17 @@ type Reflection = {
     previousDate: string;
   }>;
   overview: {
-    observations: string[];
+    signals: Array<{
+      kind:
+        | "unfinished_intention"
+        | "recurring_blocker"
+        | "untested_hypothesis";
+      title: string;
+      finding: string;
+      evidenceReflectionIds: string[];
+      recommendation: string | null;
+    }> | null;
+    signalsSource: string | null;
     actionSupport: {
       action: string;
       rationale: string;
@@ -51,6 +67,14 @@ type TodoError = {
   reflectionId: string;
   message: string;
 };
+
+type TodoAppRequestState = Record<
+  string,
+  {
+    status: "sending" | "sent" | "error";
+    message: string;
+  }
+>;
 
 type TodoTarget = {
   reflectionId: string;
@@ -104,7 +128,7 @@ export default function DiaryApp({
   const [entryDate, setEntryDate] = useState(today());
   const [isSaving, setIsSaving] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
-  const [activeView, setActiveView] = useState<DiaryView>("overview");
+  const [activeView, setActiveView] = useState<DiaryView>("capture");
   const [selectedHistoryDate, setSelectedHistoryDate] = useState<string | null>(
     null,
   );
@@ -114,6 +138,9 @@ export default function DiaryApp({
   const [fieldError, setFieldError] = useState("");
   const [todoError, setTodoError] = useState<TodoError | null>(null);
   const [updatingTodoKey, setUpdatingTodoKey] = useState<string | null>(null);
+  const [reanalyzingReflectionId, setReanalyzingReflectionId] = useState<
+    string | null
+  >(null);
   const [message, setMessage] = useState("");
   const [overviewRequest, setOverviewRequest] =
     useState<OverviewRequest>(null);
@@ -193,7 +220,7 @@ export default function DiaryApp({
       setSavedReflectionId(data.reflection.id);
       setActiveView("history");
       setSelectedHistoryDate(data.reflection.entryDate);
-      setDayReturnView("overview");
+      setDayReturnView("capture");
       setRawText("");
       setEntryDate(today());
       setTodoError(null);
@@ -243,6 +270,10 @@ export default function DiaryApp({
     }
     if (updatingTodoKey) {
       setMessage("Дождитесь сохранения действия перед удалением записи.");
+      return;
+    }
+    if (reanalyzingReflectionId) {
+      setMessage("Дождитесь завершения повторного AI-анализа.");
       return;
     }
 
@@ -421,6 +452,44 @@ export default function DiaryApp({
     setUpdatingTodoKey(null);
   }
 
+  async function retryReflectionAnalysis(reflectionId: string) {
+    if (reanalyzingReflectionId || isSaving) {
+      return;
+    }
+
+    setReanalyzingReflectionId(reflectionId);
+    setMessage("");
+
+    try {
+      const response = await fetch(
+        `/api/reflections/${reflectionId}/reanalyze`,
+        { method: "POST" },
+      );
+      if (!response.ok) {
+        throw new Error("Reanalysis failed");
+      }
+
+      const data = (await response.json()) as { reflection: Reflection };
+      setReflections((items) =>
+        items.map((item) =>
+          item.id === data.reflection.id ? data.reflection : item,
+        ),
+      );
+      setSavedReflectionId(data.reflection.id);
+      setMessage(
+        data.reflection.analysisSource === "ai"
+          ? "AI-анализ обновлён."
+          : "Модель снова не ответила вовремя. Базовый разбор сохранён.",
+      );
+    } catch {
+      setMessage(
+        "Не получилось повторить AI-анализ. Запись и текущий разбор сохранены.",
+      );
+    } finally {
+      setReanalyzingReflectionId(null);
+    }
+  }
+
   function toggleRecording() {
     if (isRecording) {
       recognitionRef.current?.stop();
@@ -570,8 +639,6 @@ export default function DiaryApp({
             onAddEntry={addAnotherEntry}
             onOpenHistory={() => changeView("history")}
             onOpenDate={(date) => openHistoryDate(date, "overview")}
-            resultHeadingRef={resultHeadingRef}
-            savedReflectionId={savedReflectionId}
             overviewRequest={overviewRequest}
           />
         )}
@@ -597,7 +664,9 @@ export default function DiaryApp({
             }
             onDelete={deleteReflection}
             onOpenDate={(date) => openHistoryDate(date, "history")}
+            onRetryAnalysis={retryReflectionAnalysis}
             onToggleTodos={toggleTodos}
+            reanalyzingReflectionId={reanalyzingReflectionId}
             resultHeadingRef={resultHeadingRef}
             savedReflectionId={savedReflectionId}
             selectedDate={selectedHistoryDate}
@@ -631,9 +700,9 @@ function DiaryNavigation({
   onChange: (view: DiaryView) => void;
 }) {
   const items: Array<{ id: DiaryView; label: string }> = [
-    { id: "overview", label: "Обзор" },
-    { id: "capture", label: "Записать" },
+    { id: "capture", label: "Запись" },
     { id: "history", label: "История" },
+    { id: "overview", label: "Обзор" },
   ];
 
   return (
@@ -843,8 +912,6 @@ function OverviewView({
   onAddEntry,
   onOpenHistory,
   onOpenDate,
-  resultHeadingRef,
-  savedReflectionId,
   overviewRequest,
 }: {
   entries: Reflection[];
@@ -852,18 +919,22 @@ function OverviewView({
   onAddEntry: () => void;
   onOpenHistory: () => void;
   onOpenDate: (date: string) => void;
-  resultHeadingRef: RefObject<HTMLHeadingElement | null>;
-  savedReflectionId: string | null;
   overviewRequest: OverviewRequest;
 }) {
-  const hasFreshResult = entries.some((item) => item.id === savedReflectionId);
-  const overview = buildOverviewSnapshot(entries, today());
-  const latestReflection =
-    entries.find((entry) => entry.entryDate <= today()) || null;
+  const availableEntries = entries.filter((entry) => entry.entryDate <= today());
+  const entryCount = availableEntries.length;
+  const analyzedEntryCount = Math.min(entryCount, OVERVIEW_ANALYSIS_LIMIT);
+  const maturity = getOverviewMaturity(entryCount);
+  const latestReflection = availableEntries[0] || null;
+  const signalsSource = buildOverviewSourceSignature(availableEntries);
+  const signals =
+    latestReflection?.overview?.signalsSource === signalsSource
+      ? latestReflection.overview.signals
+      : null;
   const needsOverview =
     latestReflection !== null &&
-    !overview.isStale &&
-    latestReflection.overview === null;
+    maturity !== "collecting" &&
+    signals === null;
   const requestForLatest =
     latestReflection && overviewRequest?.reflectionId === latestReflection.id
       ? overviewRequest
@@ -885,86 +956,110 @@ function OverviewView({
       <header className="flex flex-wrap items-end justify-between gap-4 px-1 py-2">
         <div>
           <p className="text-xs font-black uppercase tracking-[0.14em] text-[#a96214]">
-            {formatDate(today())}
+            {entryCount > 0
+              ? `${entryCount} ${pluralize(entryCount, "запись", "записи", "записей")}`
+              : "История ещё не началась"}
           </p>
-          <h1
-            className="mt-2 scroll-mt-24 font-serif-display text-4xl font-black leading-none tracking-[-0.06em] outline-none focus-visible:ring-2 focus-visible:ring-[#a96214] sm:text-5xl"
-            ref={hasFreshResult ? resultHeadingRef : undefined}
-            tabIndex={hasFreshResult ? -1 : undefined}
-          >
+          <h1 className="mt-2 font-serif-display text-4xl font-black leading-none tracking-[-0.06em] sm:text-5xl">
             Обзор
           </h1>
         </div>
-        {latestReflection && !overview.isStale && (
-          <button
-            className="rounded-full bg-[#d58b22] px-5 py-3 font-black text-white shadow-[0_10px_25px_rgba(213,139,34,0.2)] transition hover:-translate-y-0.5 hover:bg-[#bd741c]"
-            onClick={onAddEntry}
-            type="button"
-          >
-            + Записать мысль
-          </button>
-        )}
+        <button
+          className="rounded-full bg-[#d58b22] px-5 py-3 font-black text-white shadow-[0_10px_25px_rgba(213,139,34,0.2)] transition hover:-translate-y-0.5 hover:bg-[#bd741c]"
+          onClick={onAddEntry}
+          type="button"
+        >
+          + Новая запись
+        </button>
       </header>
 
-      {!latestReflection ? (
-        <section className="rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/82 p-7 text-center shadow-[0_16px_45px_rgba(57,37,20,0.06)]">
-          <p className="font-serif-display text-3xl font-black tracking-[-0.05em]">
-            Обзор начнётся с первой мысли
-          </p>
-          <p className="mx-auto mt-3 max-w-lg leading-7 text-[#6c5b4d]">
-            Расскажите, что сейчас занимает внимание. MindFlow выделит главное,
-            сохранит возможные шаги и со временем заметит повторы.
-          </p>
-          <button
-            className="mt-6 rounded-full bg-[#d58b22] px-5 py-3 font-black text-white transition hover:-translate-y-0.5"
-            onClick={onAddEntry}
-            type="button"
-          >
-            Сделать первую запись
-          </button>
-        </section>
-      ) : overview.isStale ? (
-        <StaleOverview
-          daysSinceLatestEntry={overview.daysSinceLatestEntry}
-          latestEntryDate={overview.latestEntryDate!}
+      {maturity === "collecting" ? (
+        <CollectingOverview entryCount={entryCount} onAddEntry={onAddEntry} />
+      ) : signals === null ? (
+        <OverviewLoadingState
+          isLoading={requestForLatest?.status === "loading"}
+          onRetry={() => latestReflection && onGenerateOverview(latestReflection.id)}
+          showError={requestForLatest?.status === "error"}
+        />
+      ) : signals.length === 0 ? (
+        <NoOverviewSignals
+          entryCount={analyzedEntryCount}
+          maturity={maturity}
           onAddEntry={onAddEntry}
           onOpenHistory={onOpenHistory}
         />
       ) : (
-        <FreshOverview
-          hasFreshResult={hasFreshResult}
-          isGeneratingOverview={requestForLatest?.status === "loading"}
+        <EvidenceOverview
+          entries={availableEntries}
+          entryCount={analyzedEntryCount}
+          maturity={maturity}
           onOpenDate={onOpenDate}
-          onRetryOverview={() => onGenerateOverview(latestReflection.id)}
-          overviewError={requestForLatest?.status === "error"}
-          reflection={latestReflection}
+          signals={signals}
         />
       )}
     </>
   );
 }
 
-function StaleOverview({
-  daysSinceLatestEntry,
-  latestEntryDate,
+function CollectingOverview({
+  entryCount,
+  onAddEntry,
+}: {
+  entryCount: number;
+  onAddEntry: () => void;
+}) {
+  const remaining = Math.max(3 - entryCount, 0);
+
+  return (
+    <section className="rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/82 p-7 text-center shadow-[0_16px_45px_rgba(57,37,20,0.06)]">
+      <p className="font-serif-display text-3xl font-black tracking-[-0.05em]">
+        Пока недостаточно данных
+      </p>
+      <p className="mx-auto mt-3 max-w-lg leading-7 text-[#6c5b4d]">
+        MindFlow начнёт искать доказательные сигналы после третьей записи. До
+        этого подробный анализ каждой рефлексии доступен в Истории.
+      </p>
+      <p className="mt-4 text-sm font-black text-[#8b5a22]">
+        {entryCount === 0
+          ? "Нужны первые 3 записи"
+          : `Осталось ${remaining} ${pluralize(remaining, "запись", "записи", "записей")}`}
+      </p>
+      <button
+        className="mt-6 rounded-full bg-[#d58b22] px-5 py-3 font-black text-white transition hover:-translate-y-0.5 hover:bg-[#bd741c]"
+        onClick={onAddEntry}
+        type="button"
+      >
+        {entryCount === 0 ? "Сделать первую запись" : "Добавить запись"}
+      </button>
+    </section>
+  );
+}
+
+function NoOverviewSignals({
+  entryCount,
+  maturity,
   onAddEntry,
   onOpenHistory,
 }: {
-  daysSinceLatestEntry: number | null;
-  latestEntryDate: string;
+  entryCount: number;
+  maturity: "early" | "established";
   onAddEntry: () => void;
   onOpenHistory: () => void;
 }) {
   return (
     <section className="rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/82 p-7 text-center shadow-[0_16px_45px_rgba(57,37,20,0.06)]">
       <p className="font-serif-display text-3xl font-black tracking-[-0.05em]">
-        Нет свежих записей
+        Подтверждённых закономерностей пока нет
       </p>
       <p className="mx-auto mt-3 max-w-lg leading-7 text-[#6c5b4d]">
-        Последняя запись была {formatDateShort(latestEntryDate)}
-        {daysSinceLatestEntry !== null &&
-          ` — ${formatDaysAgo(daysSinceLatestEntry)}`}.
-        Сделайте новую запись, чтобы MindFlow мог показать актуальный вывод.
+        Проанализировано {entryCount} {pluralize(entryCount, "запись", "записи", "записей")}. MindFlow не нашёл незакрытого намерения,
+        повторяющегося стопора или непроверенной гипотезы, подтверждённых
+        минимум тремя рефлексиями.
+      </p>
+      <p className="mx-auto mt-3 max-w-lg text-sm leading-6 text-[#7b6a5b]">
+        {maturity === "early"
+          ? "Это ранний обзор: отсутствие вывода точнее, чем предположение на малом объёме данных."
+          : "Истории уже достаточно для анализа, но экран останется пустым, пока не появится практически полезный сигнал."}
       </p>
       <div className="mt-6 flex flex-wrap justify-center gap-3">
         <button
@@ -972,7 +1067,7 @@ function StaleOverview({
           onClick={onAddEntry}
           type="button"
         >
-          Записать новую мысль
+          Добавить запись
         </button>
         <button
           className="rounded-full border border-[#3a2a1d]/10 px-5 py-3 font-black text-[#7a4a1d] transition hover:bg-[#3a2a1d]/5"
@@ -986,82 +1081,79 @@ function StaleOverview({
   );
 }
 
-function FreshOverview({
-  hasFreshResult,
-  isGeneratingOverview,
+function EvidenceOverview({
+  entries,
+  entryCount,
+  maturity,
   onOpenDate,
-  onRetryOverview,
-  overviewError,
-  reflection,
+  signals,
 }: {
-  hasFreshResult: boolean;
-  isGeneratingOverview: boolean;
+  entries: Reflection[];
+  entryCount: number;
+  maturity: "early" | "established";
   onOpenDate: (date: string) => void;
-  onRetryOverview: () => void;
-  overviewError: boolean;
-  reflection: Reflection;
+  signals: NonNullable<NonNullable<Reflection["overview"]>["signals"]>;
 }) {
-  const perspective = reflection.overview;
-
   return (
-    <section className="rounded-[2rem] border border-[#5b4560]/10 bg-[#fffaf1]/84 p-5 shadow-[0_16px_45px_rgba(57,37,20,0.06)] sm:p-7">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-xs font-black uppercase tracking-[0.14em] text-[#7b667d]">
-            Между записями
-          </p>
-        </div>
-        <button
-          className="rounded-full border border-[#3a2a1d]/10 px-4 py-2 text-sm font-black text-[#7a4a1d] transition hover:bg-[#3a2a1d]/5"
-          onClick={() => onOpenDate(reflection.entryDate)}
-          type="button"
-        >
-          Открыть запись
-        </button>
-      </div>
-
-      {perspective && perspective.observations.length > 0 ? (
-        <div className="mt-5 grid gap-4">
-          {perspective.observations.map((observation, index) => (
-            <p
-              className={
-                index === 0
-                  ? "font-serif-display text-2xl font-black leading-snug tracking-[-0.035em] sm:text-3xl"
-                  : "border-t border-[#3a2a1d]/8 pt-4 text-[1.05rem] leading-8 text-[#4f4034]"
-              }
-              key={observation}
-            >
-              {observation}
-            </p>
-          ))}
-        </div>
-      ) : perspective ? (
-        <div className="mt-5 rounded-3xl bg-[#eee7ef]/58 p-5 text-[#66546a]">
-          <p className="font-serif-display text-xl font-black tracking-[-0.025em]">
-            Пока без новой динамики
-          </p>
-          <p className="mt-2 text-sm leading-6">
-            В этой записи нет подтверждённого изменения или повтора относительно
-            предыдущих. Полный разбор уже готов внутри дня.
-          </p>
-        </div>
-      ) : (
-        <OverviewLoadingState
-          isLoading={isGeneratingOverview}
-          onRetry={onRetryOverview}
-          showError={overviewError}
-        />
-      )}
-
-      {hasFreshResult && (
-        <p
-          aria-live="polite"
-          className="mt-4 text-center text-sm font-bold text-[#56704f]"
-        >
-          Разбор обновлён после новой записи
+    <div className="grid gap-4">
+      <section className="rounded-[2rem] border border-[#5b4560]/10 bg-[#eee7ef]/52 p-5 sm:p-6">
+        <p className="text-xs font-black uppercase tracking-[0.14em] text-[#7b667d]">
+          {maturity === "early" ? "Ранний обзор" : "Накопленный обзор"}
         </p>
-      )}
-    </section>
+        <p className="mt-2 leading-7 text-[#66546a]">
+          Найдены только сигналы, подтверждённые минимум тремя из {entryCount}{" "}
+          {pluralize(entryCount, "записи", "записей", "записей")}.
+        </p>
+      </section>
+
+      {signals.map((signal) => {
+        const evidence = groupSignalEvidence(signal, entries);
+        return (
+          <article
+            className="rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/86 p-5 shadow-[0_16px_45px_rgba(57,37,20,0.06)] sm:p-7"
+            key={`${signal.kind}:${signal.title}`}
+          >
+            <p className="text-xs font-black uppercase tracking-[0.14em] text-[#a96214]">
+              {signalKindLabel(signal.kind)}
+            </p>
+            <h2 className="mt-3 font-serif-display text-2xl font-black tracking-[-0.035em] sm:text-3xl">
+              {signal.title}
+            </h2>
+            <p className="mt-4 leading-8 text-[#4f4034]">{signal.finding}</p>
+
+            {signal.recommendation && (
+              <div className="mt-5 rounded-3xl bg-[#edf1e8] p-5">
+                <p className="text-xs font-black uppercase tracking-[0.12em] text-[#596a4d]">
+                  MindFlow предлагает
+                </p>
+                <p className="mt-2 leading-7 text-[#42513a]">
+                  {signal.recommendation}
+                </p>
+              </div>
+            )}
+
+            <div className="mt-5 border-t border-[#3a2a1d]/8 pt-4">
+              <p className="text-sm font-black text-[#7a6a5c]">
+                Основано на записях
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {evidence.map((item) => (
+                  <button
+                    className="rounded-full border border-[#3a2a1d]/10 px-3 py-2 text-sm font-black text-[#7a4a1d] transition hover:bg-[#3a2a1d]/5"
+                    key={item.date}
+                    onClick={() => onOpenDate(item.date)}
+                    type="button"
+                  >
+                    {formatDateShort(item.date)}
+                    {item.count > 1 ? ` · ${item.count} записи` : ""}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </article>
+        );
+      })}
+    </div>
   );
 }
 
@@ -1078,7 +1170,7 @@ function OverviewLoadingState({
     return (
       <div className="mt-5 rounded-3xl bg-[#eee7ef]/58 p-5">
         <p className="font-bold leading-7 text-[#66546a]">
-          Не получилось сформировать взгляд на эту запись.
+          Не получилось проверить историю.
         </p>
         <button
           className="mt-3 rounded-full border border-[#66546a]/15 px-4 py-2 text-sm font-black text-[#66546a] transition hover:bg-white/45"
@@ -1098,14 +1190,45 @@ function OverviewLoadingState({
     >
       <p className="font-bold">
         {isLoading
-          ? "Собираю взгляд на эту запись…"
-          : "Взгляд на запись ещё не сформирован."}
+          ? "Проверяю историю на незакрытые циклы…"
+          : "Доказательный обзор ещё не сформирован."}
       </p>
       <p className="mt-2 text-sm leading-6">
-        Ищу не пересказ, а связи, противоречия и возможную точку движения.
+        Результат появится только при наличии сигнала, подтверждённого минимум
+        тремя отдельными записями.
       </p>
     </div>
   );
+}
+
+function groupSignalEvidence(
+  signal: NonNullable<NonNullable<Reflection["overview"]>["signals"]>[number],
+  entries: Reflection[],
+) {
+  const evidenceIds = new Set(signal.evidenceReflectionIds);
+  const counts = new Map<string, number>();
+
+  for (const entry of entries) {
+    if (evidenceIds.has(entry.id)) {
+      counts.set(entry.entryDate, (counts.get(entry.entryDate) || 0) + 1);
+    }
+  }
+
+  return [...counts.entries()]
+    .map(([date, count]) => ({ date, count }))
+    .sort((left, right) => right.date.localeCompare(left.date));
+}
+
+function signalKindLabel(
+  kind: NonNullable<NonNullable<Reflection["overview"]>["signals"]>[number]["kind"],
+) {
+  if (kind === "unfinished_intention") {
+    return "Незакрытое намерение";
+  }
+  if (kind === "recurring_blocker") {
+    return "Повторяющийся стопор";
+  }
+  return "Непроверенная гипотеза";
 }
 
 function HistoryView({
@@ -1114,7 +1237,9 @@ function HistoryView({
   onBack,
   onDelete,
   onOpenDate,
+  onRetryAnalysis,
   onToggleTodos,
+  reanalyzingReflectionId,
   resultHeadingRef,
   savedReflectionId,
   selectedDate,
@@ -1126,7 +1251,9 @@ function HistoryView({
   onBack: () => void;
   onDelete: (reflectionId: string) => void;
   onOpenDate: (date: string) => void;
+  onRetryAnalysis: (reflectionId: string) => void;
   onToggleTodos: (targets: TodoTarget[], completed: boolean) => void;
+  reanalyzingReflectionId: string | null;
   resultHeadingRef: RefObject<HTMLHeadingElement | null>;
   savedReflectionId: string | null;
   selectedDate: string | null;
@@ -1195,7 +1322,9 @@ function HistoryView({
         <DayOverview
           entries={selectedEntries}
           onDelete={onDelete}
+          onRetryAnalysis={onRetryAnalysis}
           onToggleTodos={onToggleTodos}
+          reanalyzingReflectionId={reanalyzingReflectionId}
           todoError={todoError}
           updatingTodoKey={updatingTodoKey}
         />
@@ -1211,18 +1340,27 @@ function HistoryView({
 function DayOverview({
   entries,
   onDelete,
+  onRetryAnalysis,
   onToggleTodos,
+  reanalyzingReflectionId,
   todoError,
   updatingTodoKey,
 }: {
   entries: Reflection[];
   onDelete: (reflectionId: string) => void;
+  onRetryAnalysis: (reflectionId: string) => void;
   onToggleTodos: (targets: TodoTarget[], completed: boolean) => void;
+  reanalyzingReflectionId: string | null;
   todoError: TodoError | null;
   updatingTodoKey: string | null;
 }) {
+  const [todoAppRequests, setTodoAppRequests] =
+    useState<TodoAppRequestState>({});
   const primaryInsights = buildPrimaryInsights(entries);
   const actions = groupDayActions(entries);
+  const fallbackEntries = entries.filter(
+    (entry) => entry.analysisSource === "fallback",
+  );
   const actionSupport =
     entries.find((entry) => entry.overview?.actionSupport)?.overview
       ?.actionSupport || null;
@@ -1234,6 +1372,68 @@ function DayOverview({
       )
     : actions;
 
+  async function sendTodoToTodoApp(input: {
+    sourceId: string;
+    reflectionId: string;
+    todo: string;
+  }) {
+    if (todoAppRequests[input.sourceId]?.status === "sending") {
+      return;
+    }
+
+    setTodoAppRequests((current) => ({
+      ...current,
+      [input.sourceId]: {
+        status: "sending",
+        message: "Добавляю в TodoApp…",
+      },
+    }));
+
+    try {
+      const response = await fetch("/api/integrations/todo-app", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reflectionId: input.reflectionId,
+          targetDate: today(),
+          todo: input.todo,
+        }),
+      });
+      const data = (await response.json()) as {
+        error?: string;
+        status?: "created" | "duplicate";
+      };
+
+      if (!response.ok || !data.status) {
+        throw new Error(
+          data.error || "Не получилось добавить задачу в TodoApp.",
+        );
+      }
+
+      setTodoAppRequests((current) => ({
+        ...current,
+        [input.sourceId]: {
+          status: "sent",
+          message:
+            data.status === "duplicate"
+              ? "Уже добавлено в TodoApp"
+              : "Добавлено в TodoApp",
+        },
+      }));
+    } catch (error) {
+      setTodoAppRequests((current) => ({
+        ...current,
+        [input.sourceId]: {
+          status: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Не получилось добавить задачу в TodoApp.",
+        },
+      }));
+    }
+  }
+
   return (
     <section className="grid gap-8 rounded-[2rem] border border-[#3a2a1d]/8 bg-[#fffaf1]/72 px-5 py-6 shadow-[0_14px_42px_rgba(57,37,20,0.045)] sm:px-7 sm:py-8">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#3a2a1d]/8 pb-5">
@@ -1244,6 +1444,31 @@ function DayOverview({
           {entries.length} {pluralize(entries.length, "запись", "записи", "записей")}
         </p>
       </div>
+
+      {fallbackEntries.map((entry) => {
+        const isReanalyzing = reanalyzingReflectionId === entry.id;
+        return (
+          <section
+            className="rounded-3xl border border-[#d58b22]/18 bg-[#f6e6c6]/72 p-5"
+            key={entry.id}
+          >
+            <p className="font-black text-[#6b471f]">
+              Запись пока разобрана базовыми правилами
+            </p>
+            <p className="mt-2 text-sm leading-6 text-[#806344]">
+              Исходный текст сохранён. Можно ещё раз запросить полный AI-анализ.
+            </p>
+            <button
+              className="mt-4 rounded-full bg-[#d58b22] px-4 py-2.5 text-sm font-black text-white transition hover:bg-[#bd741c] disabled:cursor-wait disabled:opacity-65"
+              disabled={reanalyzingReflectionId !== null}
+              onClick={() => onRetryAnalysis(entry.id)}
+              type="button"
+            >
+              {isReanalyzing ? "Повторяю анализ…" : "Повторить AI-анализ"}
+            </button>
+          </section>
+        );
+      })}
 
       <section aria-labelledby="primary-insights-heading">
         <p className="text-xs font-black uppercase tracking-[0.14em] text-[#a96214]">
@@ -1306,6 +1531,16 @@ function DayOverview({
                 reflectionId: source.reflectionId,
                 todo: source.todo,
               }));
+              const primarySource = getPrimaryTodoSource(action.sources);
+              if (!primarySource) {
+                return null;
+              }
+              const todoAppPayload = buildTodoAppImportPayload({
+                title: action.todo,
+                sources: action.sources,
+              });
+              const todoAppTask = todoAppPayload.tasks[0];
+              const todoAppRequest = todoAppRequests[todoAppTask.sourceId];
               return (
                 <li
                   className={
@@ -1320,39 +1555,88 @@ function DayOverview({
                       Что поможет сдвинуть · выбор ИИ
                     </p>
                   )}
-                  <label className="flex cursor-pointer items-start gap-3">
-                    <input
-                      aria-label={`${isCompleted ? "Отметить невыполненным" : "Отметить выполненным"}: ${action.todo}`}
-                      checked={isCompleted}
-                      className="mt-1 h-5 w-5 shrink-0 accent-[#56704f]"
-                      disabled={updatingTodoKey !== null}
-                      onChange={(event) =>
-                        onToggleTodos(targets, event.target.checked)
-                      }
-                      type="checkbox"
-                    />
-                    <span className="min-w-0">
-                      <span
-                        className={
-                          isCompleted
-                            ? "block leading-7 text-[#6c5b4d] line-through"
-                            : "block leading-7"
+                  <div className="flex items-start gap-3">
+                    <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-3">
+                      <input
+                        aria-label={`${isCompleted ? "Отметить невыполненным" : "Отметить выполненным"}: ${action.todo}`}
+                        checked={isCompleted}
+                        className="mt-1 h-5 w-5 shrink-0 accent-[#56704f]"
+                        disabled={updatingTodoKey !== null}
+                        onChange={(event) =>
+                          onToggleTodos(targets, event.target.checked)
                         }
-                      >
-                        {action.todo}
-                      </span>
-                      <span className="mt-1 block text-xs font-bold text-[#56704f]">
-                        {action.sources.length > 1
-                          ? `Из ${action.sources.length} записей · выполнено ${completedCount}`
-                          : formatTime(action.sources[0].createdAt)}
-                      </span>
-                      {isPrimaryAction && actionSupport?.rationale && (
-                        <span className="mt-3 block border-t border-[#9a5a13]/10 pt-3 text-sm font-normal leading-6 text-[#806344]">
-                          {actionSupport.rationale}
+                        type="checkbox"
+                      />
+                      <span className="min-w-0">
+                        <span
+                          className={
+                            isCompleted
+                              ? "block leading-7 text-[#6c5b4d] line-through"
+                              : "block leading-7"
+                          }
+                        >
+                          {action.todo}
                         </span>
-                      )}
-                    </span>
-                  </label>
+                        <span className="mt-1 block text-xs font-bold text-[#56704f]">
+                          {action.sources.length > 1
+                            ? `Из ${action.sources.length} записей · выполнено ${completedCount}`
+                            : formatTime(action.sources[0].createdAt)}
+                        </span>
+                        {isPrimaryAction && actionSupport?.rationale && (
+                          <span className="mt-3 block border-t border-[#9a5a13]/10 pt-3 text-sm font-normal leading-6 text-[#806344]">
+                            {actionSupport.rationale}
+                          </span>
+                        )}
+                        {todoAppRequest && (
+                          <span
+                            className={
+                              todoAppRequest.status === "error"
+                                ? "mt-2 block text-xs font-bold text-[#9b3b2a]"
+                                : "mt-2 block text-xs font-bold text-[#56704f]"
+                            }
+                            role={
+                              todoAppRequest.status === "error"
+                                ? "alert"
+                                : "status"
+                            }
+                          >
+                            {todoAppRequest.message}
+                          </span>
+                        )}
+                      </span>
+                    </label>
+                    <button
+                      aria-label={`${todoAppRequest?.status === "error" ? "Повторить добавление в TodoApp" : "Добавить в TodoApp"}: ${action.todo}`}
+                      className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-[#56704f]/15 bg-white/80 text-xl font-black leading-none text-[#56704f] transition hover:border-[#56704f]/30 hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#56704f] disabled:cursor-default disabled:opacity-70"
+                      disabled={
+                        todoAppRequest?.status === "sending" ||
+                        todoAppRequest?.status === "sent"
+                      }
+                      onClick={() =>
+                        void sendTodoToTodoApp({
+                          sourceId: todoAppTask.sourceId,
+                          reflectionId: primarySource.reflectionId,
+                          todo: primarySource.todo,
+                        })
+                      }
+                      title={
+                        todoAppRequest?.status === "error"
+                          ? "Повторить добавление в TodoApp"
+                          : "Добавить в TodoApp"
+                      }
+                      type="button"
+                    >
+                      <span aria-hidden="true">
+                        {todoAppRequest?.status === "sending"
+                          ? "…"
+                          : todoAppRequest?.status === "sent"
+                            ? "✓"
+                            : todoAppRequest?.status === "error"
+                              ? "↻"
+                              : "+"}
+                      </span>
+                    </button>
+                  </div>
                 </li>
               );
             })}
@@ -1594,10 +1878,6 @@ function formatDateShort(date: string) {
     day: "numeric",
     month: "short",
   }).format(new Date(`${date}T12:00:00`));
-}
-
-function formatDaysAgo(days: number) {
-  return `${days} ${pluralize(days, "день", "дня", "дней")} назад`;
 }
 
 function formatTime(date: string) {

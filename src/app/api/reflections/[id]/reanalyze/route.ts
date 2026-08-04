@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getAuthenticatedUser } from "../../../../../lib/supabase/server";
-import { generateAndStoreReflectionOverview } from "../../../../reflection-store";
+import { reanalyzeStoredReflection } from "../../../../reflection-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,7 +19,7 @@ export async function POST(_request: Request, context: RouteContext) {
   const { id } = await context.params;
 
   try {
-    const reflection = await generateAndStoreReflectionOverview(
+    const reflection = await reanalyzeStoredReflection(
       user.supabase,
       user.userId,
       id,
@@ -31,7 +31,7 @@ export async function POST(_request: Request, context: RouteContext) {
     return NextResponse.json({ reflection });
   } catch {
     return NextResponse.json(
-      { error: "Не получилось проверить историю записей." },
+      { error: "Не получилось повторить AI-анализ." },
       { status: 500 },
     );
   }
