@@ -6,7 +6,7 @@ import type {
   ReflectionInsightCandidate,
 } from "./reflection-analysis";
 
-export const REFLECTION_ANALYSIS_VERSION = "mindflow-reflection-v6";
+export const REFLECTION_ANALYSIS_VERSION = "mindflow-reflection-v8";
 
 const MAX_INSIGHT_CANDIDATES = 8;
 
@@ -33,11 +33,15 @@ export const reflectionOverviewSchema = {
             type: "string",
             minLength: 4,
             maxLength: 100,
+            description:
+              "Обезличенный заголовок наблюдаемого сигнала без внешнего описания владельца дневника.",
           },
           finding: {
             type: "string",
             minLength: 20,
             maxLength: 420,
+            description:
+              "Обезличенный факт и практическое следствие без слов автор или пользователь.",
           },
           evidenceReflectionIds: {
             type: "array",
@@ -54,6 +58,8 @@ export const reflectionOverviewSchema = {
             type: "string",
             minLength: 0,
             maxLength: 320,
+            description:
+              "Один мягкий конкретный следующий шаг на ты. Пустая строка, если совет не следует из сигнала.",
           },
         },
         required: [
@@ -80,7 +86,7 @@ export const reflectionAnalysisSchema = {
       minLength: 8,
       maxLength: 700,
       description:
-        "Нейтральный краткий итог текущей записи на русском языке, 1–3 предложения.",
+        "Нейтральный обезличенный итог текущей записи на русском языке, 1–3 предложения, без внешнего описания владельца дневника.",
     },
     themes: {
       type: "array",
@@ -133,7 +139,7 @@ export const reflectionAnalysisSchema = {
         maxLength: 160,
       },
       description:
-        "Только действия, явно названные или однозначно задуманные автором текущей записи.",
+        "Только действия, намерение выполнить которые явно названо или однозначно сформулировано в текущей записи.",
     },
     repeats: {
       type: "array",
@@ -243,6 +249,8 @@ export const reflectionVerificationSchema = {
             type: "string",
             minLength: 0,
             maxLength: 160,
+            description:
+              "Естественная самодостаточная задача с сохранением необходимого контекста из записи. Пустая строка для rejected.",
           },
           reason: {
             type: "string",
@@ -278,7 +286,7 @@ export function parseReflectionAnalysis(
     throw new Error("AI analysis must be an object.");
   }
 
-  const summary = requiredString(value.summary, 8, 700, "summary");
+  const summary = requiredNeutralString(value.summary, 8, 700, "summary");
   const themes = requiredStringArray(value.themes, 1, 5, 2, 80, "themes");
   const insightCandidates = parseInsightCandidates(
     value.insightCandidates,
@@ -310,8 +318,8 @@ export function parseReflectionAnalysis(
     }
 
     return {
-      title: requiredString(repeat.title, 3, 100, "repeat.title"),
-      description: requiredString(
+      title: requiredNeutralString(repeat.title, 3, 100, "repeat.title"),
+      description: requiredNeutralString(
         repeat.description,
         8,
         300,
@@ -571,7 +579,7 @@ function parseInsightCandidates(
 
     return [{
       id: "",
-      text: requiredString(
+      text: requiredNeutralString(
         candidate.text,
         8,
         400,
@@ -657,17 +665,33 @@ function parseOverviewSignal(
     "overview.signal.recommendation",
   );
 
+  const title = requiredNeutralString(
+    value.title,
+    4,
+    100,
+    "overview.signal.title",
+  );
+  const finding = requiredNeutralString(
+    value.finding,
+    20,
+    420,
+    "overview.signal.finding",
+  );
+  const neutralRecommendation = recommendation
+    ? requiredNeutralString(
+        recommendation,
+        1,
+        320,
+        "overview.signal.recommendation",
+      )
+    : "";
+
   return {
     kind,
-    title: requiredString(value.title, 4, 100, "overview.signal.title"),
-    finding: requiredString(
-      value.finding,
-      20,
-      420,
-      "overview.signal.finding",
-    ),
+    title,
+    finding,
     evidenceReflectionIds,
-    recommendation: recommendation || null,
+    recommendation: neutralRecommendation || null,
   };
 }
 
@@ -682,7 +706,7 @@ function parseActionSupport(value: unknown, allowedActions: Set<string>) {
     160,
     "actionSupport.action",
   );
-  const rationale = requiredString(
+  const rationale = requiredNeutralString(
     value.rationale,
     0,
     320,
@@ -742,6 +766,28 @@ function requiredString(
     throw new Error(`AI analysis contains invalid ${field}.`);
   }
 
+  return normalized;
+}
+
+function requiredNeutralString(
+  value: unknown,
+  minimumLength: number,
+  maximumLength: number,
+  field: string,
+) {
+  const normalized = requiredString(
+    value,
+    minimumLength,
+    maximumLength,
+    field,
+  );
+  if (
+    /(?:^|[^\p{L}\p{N}_])(?:автор(?:а|у|ом|е)?|пользовател(?:ь|я|ю|ем|е))(?![\p{L}\p{N}_])/iu.test(
+      normalized,
+    )
+  ) {
+    throw new Error(`AI analysis contains external observer voice in ${field}.`);
+  }
   return normalized;
 }
 

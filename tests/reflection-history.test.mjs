@@ -7,8 +7,11 @@ import {
   buildOverviewSourceSignature,
   buildOverviewSnapshot,
   buildPrimaryInsights,
+  buildReflectionPreview,
   getOverviewMaturity,
   groupDayActions,
+  hasExternalObserverVoice,
+  neutralizeExternalObserverVoice,
   shiftMonth,
 } from "../src/app/reflection-history.ts";
 
@@ -46,6 +49,43 @@ test("changes the overview source when an action or entry changes", () => {
   assert.notEqual(initial, completed);
   assert.notEqual(initial, withAnotherEntry);
   assert.equal(initial, buildOverviewSourceSignature([...entries]));
+  assert.match(initial, /^overview-v2-/);
+});
+
+test("keeps observer-style legacy copy out of reflection previews", () => {
+  assert.equal(hasExternalObserverVoice("Автор анализирует рабочий день."), true);
+  assert.equal(hasExternalObserverVoice("В записи разобран рабочий день."), false);
+  assert.equal(
+    buildReflectionPreview({
+      summary: "Автор анализирует рабочий день.",
+      insights: ["Пользователь возвращается к теме запуска."],
+      themes: ["Работа", "Запуск"],
+    }),
+    "Темы записи: Работа и Запуск.",
+  );
+  assert.equal(
+    buildReflectionPreview({
+      summary: "В записи разобраны критерии запуска.",
+      insights: [],
+      themes: ["Запуск"],
+    }),
+    "В записи разобраны критерии запуска.",
+  );
+});
+
+test("keeps legacy insights while removing the external observer label", () => {
+  assert.equal(
+    neutralizeExternalObserverVoice(
+      "Автор возвращается к теме запуска и проверяет сроки.",
+    ),
+    "Возвращается к теме запуска и проверяет сроки.",
+  );
+  assert.equal(
+    neutralizeExternalObserverVoice(
+      "Неопределённость остаётся важной для пользователя.",
+    ),
+    "Неопределённость остаётся важной для тебя.",
+  );
 });
 
 test("builds a day summary from all entries without another AI call", () => {

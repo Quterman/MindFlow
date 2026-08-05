@@ -68,6 +68,9 @@ export type OverviewSnapshot = {
 export type OverviewMaturity = "collecting" | "early" | "established";
 export const OVERVIEW_ANALYSIS_LIMIT = 30;
 
+const EXTERNAL_OBSERVER_VOICE =
+  /(?:^|[^\p{L}\p{N}_])(?:автор(?:а|у|ом|е)?|пользовател(?:ь|я|ю|ем|е))(?![\p{L}\p{N}_])/iu;
+
 type OverviewSourceReflection = {
   id: string;
   entryDate: string;
@@ -88,6 +91,68 @@ export function getOverviewMaturity(entryCount: number): OverviewMaturity {
     return "early";
   }
   return "established";
+}
+
+export function hasExternalObserverVoice(value: string) {
+  return EXTERNAL_OBSERVER_VOICE.test(value);
+}
+
+export function neutralizeExternalObserverVoice(value: string) {
+  const trimmed = value.trim();
+  const withoutLeadingObserver = trimmed.replace(
+    /^(?:автор|пользователь)\s+/iu,
+    "",
+  );
+
+  if (withoutLeadingObserver !== trimmed) {
+    return `${withoutLeadingObserver.charAt(0).toUpperCase()}${withoutLeadingObserver.slice(1)}`;
+  }
+
+  return trimmed
+    .replace(
+      /(?<![\p{L}\p{N}_])у (?:автора|пользователя)(?![\p{L}\p{N}_])/giu,
+      "у тебя",
+    )
+    .replace(
+      /(?<![\p{L}\p{N}_])для (?:автора|пользователя)(?![\p{L}\p{N}_])/giu,
+      "для тебя",
+    )
+    .replace(
+      /(?<![\p{L}\p{N}_])(?:автора|пользователя)(?![\p{L}\p{N}_])/giu,
+      "тебя",
+    )
+    .replace(
+      /(?<![\p{L}\p{N}_])(?:автору|пользователю)(?![\p{L}\p{N}_])/giu,
+      "тебе",
+    )
+    .replace(
+      /(?<![\p{L}\p{N}_])(?:автором|пользователем)(?![\p{L}\p{N}_])/giu,
+      "тобой",
+    )
+    .replace(
+      /(?<![\p{L}\p{N}_])(?:авторе|пользователе)(?![\p{L}\p{N}_])/giu,
+      "тебе",
+    );
+}
+
+export function buildReflectionPreview(input: {
+  summary: string;
+  insights: string[];
+  themes: string[];
+}) {
+  const generatedPreview = [input.summary, ...input.insights].find(
+    (value) => value.trim().length > 0 && !hasExternalObserverVoice(value),
+  );
+  if (generatedPreview) {
+    return generatedPreview.trim();
+  }
+
+  const themes = uniqueStrings(input.themes).slice(0, 3);
+  if (themes.length > 0) {
+    return `Темы записи: ${joinRussianList(themes)}.`;
+  }
+
+  return "Запись сохранена — откройте день, чтобы посмотреть детали.";
 }
 
 export function buildOverviewSourceSignature(
@@ -119,7 +184,7 @@ export function buildOverviewSourceSignature(
     hash = Math.imul(hash, 16_777_619);
   }
 
-  return `overview-v1-${Math.min(entries.length, OVERVIEW_ANALYSIS_LIMIT)}-${(hash >>> 0).toString(36)}`;
+  return `overview-v2-${Math.min(entries.length, OVERVIEW_ANALYSIS_LIMIT)}-${(hash >>> 0).toString(36)}`;
 }
 
 export function buildDaySummary(entries: DaySummaryReflection[]) {

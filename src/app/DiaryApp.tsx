@@ -9,10 +9,13 @@ import {
   type RefObject,
 } from "react";
 import {
+  buildReflectionPreview,
   buildOverviewSourceSignature,
   buildPrimaryInsights,
   getOverviewMaturity,
   groupDayActions,
+  hasExternalObserverVoice,
+  neutralizeExternalObserverVoice,
   OVERVIEW_ANALYSIS_LIMIT,
 } from "./reflection-history";
 import {
@@ -83,6 +86,7 @@ type TodoTarget = {
 
 type OverviewRequest = {
   reflectionId: string;
+  sourceSignature: string;
   status: "loading" | "error";
 } | null;
 
@@ -148,6 +152,7 @@ export default function DiaryApp({
   const resultHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const overviewRequestKeysRef = useRef(new Set<string>());
 
   useEffect(() => {
     if (!savedReflectionId) {
@@ -239,8 +244,20 @@ export default function DiaryApp({
     }
   }
 
-  const generateOverview = useCallback(async (reflectionId: string) => {
-    setOverviewRequest({ reflectionId, status: "loading" });
+  const generateOverview = useCallback(async (
+    reflectionId: string,
+    sourceSignature: string,
+  ) => {
+    const requestKey = `${reflectionId}:${sourceSignature}`;
+    if (overviewRequestKeysRef.current.has(requestKey)) {
+      return;
+    }
+    overviewRequestKeysRef.current.add(requestKey);
+    setOverviewRequest({
+      reflectionId,
+      sourceSignature,
+      status: "loading",
+    });
 
     try {
       const response = await fetch(
@@ -252,14 +269,37 @@ export default function DiaryApp({
       }
 
       const data = (await response.json()) as { reflection: Reflection };
-      setReflections((items) =>
-        items.map((item) =>
+      setReflections((items) => {
+        const currentSourceSignature = buildOverviewSourceSignature(
+          items.filter((item) => item.entryDate <= today()),
+        );
+        if (
+          data.reflection.overview?.signalsSource !== currentSourceSignature
+        ) {
+          return items;
+        }
+        return items.map((item) =>
           item.id === data.reflection.id ? data.reflection : item,
-        ),
+        );
+      });
+      setOverviewRequest((current) =>
+        current?.reflectionId === reflectionId &&
+        current.sourceSignature === sourceSignature
+          ? null
+          : current,
       );
-      setOverviewRequest(null);
     } catch {
-      setOverviewRequest({ reflectionId, status: "error" });
+      overviewRequestKeysRef.current.delete(requestKey);
+      setOverviewRequest((current) =>
+        current?.reflectionId === reflectionId &&
+        current.sourceSignature === sourceSignature
+          ? {
+              reflectionId,
+              sourceSignature,
+              status: "error",
+            }
+          : current,
+      );
     }
   }, []);
 
@@ -890,7 +930,7 @@ function CaptureView({
             Последняя запись
           </p>
           <p className="mt-2 font-bold leading-7">
-            {latestReflection.summary || latestReflection.insights[0]}
+            {buildReflectionPreview(latestReflection)}
           </p>
           <button
             className="mt-4 rounded-full border border-[#3a2a1d]/12 px-4 py-2 text-sm font-black text-[#7a4a1d] transition hover:bg-[#3a2a1d]/5 disabled:cursor-not-allowed disabled:opacity-50"
@@ -915,7 +955,10 @@ function OverviewView({
   overviewRequest,
 }: {
   entries: Reflection[];
-  onGenerateOverview: (reflectionId: string) => void;
+  onGenerateOverview: (
+    reflectionId: string,
+    sourceSignature: string,
+  ) => void;
   onAddEntry: () => void;
   onOpenHistory: () => void;
   onOpenDate: (date: string) => void;
@@ -927,75 +970,83 @@ function OverviewView({
   const maturity = getOverviewMaturity(entryCount);
   const latestReflection = availableEntries[0] || null;
   const signalsSource = buildOverviewSourceSignature(availableEntries);
-  const signals =
-    latestReflection?.overview?.signalsSource === signalsSource
-      ? latestReflection.overview.signals
-      : null;
+  const savedSignals = latestReflection?.overview?.signals ?? null;
+  const overviewIsCurrent =
+    latestReflection?.overview?.signalsSource === signalsSource;
   const needsOverview =
     latestReflection !== null &&
     maturity !== "collecting" &&
-    signals === null;
+    !overviewIsCurrent;
   const requestForLatest =
-    latestReflection && overviewRequest?.reflectionId === latestReflection.id
+    latestReflection &&
+    overviewRequest?.reflectionId === latestReflection.id &&
+    overviewRequest.sourceSignature === signalsSource
       ? overviewRequest
       : null;
 
   useEffect(() => {
     if (needsOverview && requestForLatest === null) {
-      onGenerateOverview(latestReflection.id);
+      onGenerateOverview(latestReflection.id, signalsSource);
     }
   }, [
     latestReflection,
     needsOverview,
     onGenerateOverview,
     requestForLatest,
+    signalsSource,
   ]);
 
   return (
     <>
-      <header className="flex flex-wrap items-end justify-between gap-4 px-1 py-2">
-        <div>
-          <p className="text-xs font-black uppercase tracking-[0.14em] text-[#a96214]">
-            {entryCount > 0
-              ? `${entryCount} ${pluralize(entryCount, "запись", "записи", "записей")}`
-              : "История ещё не началась"}
-          </p>
-          <h1 className="mt-2 font-serif-display text-4xl font-black leading-none tracking-[-0.06em] sm:text-5xl">
-            Обзор
-          </h1>
-        </div>
-        <button
-          className="rounded-full bg-[#d58b22] px-5 py-3 font-black text-white shadow-[0_10px_25px_rgba(213,139,34,0.2)] transition hover:-translate-y-0.5 hover:bg-[#bd741c]"
-          onClick={onAddEntry}
-          type="button"
-        >
-          + Новая запись
-        </button>
+      <header className="px-1 py-2">
+        <p className="text-xs font-black uppercase tracking-[0.14em] text-[#a96214]">
+          {entryCount > 0
+            ? `${entryCount} ${pluralize(entryCount, "запись", "записи", "записей")}`
+            : "История ещё не началась"}
+        </p>
+        <h1 className="mt-2 font-serif-display text-4xl font-black leading-none tracking-[-0.06em] sm:text-5xl">
+          Обзор
+        </h1>
       </header>
 
       {maturity === "collecting" ? (
         <CollectingOverview entryCount={entryCount} onAddEntry={onAddEntry} />
-      ) : signals === null ? (
+      ) : savedSignals === null ? (
         <OverviewLoadingState
           isLoading={requestForLatest?.status === "loading"}
-          onRetry={() => latestReflection && onGenerateOverview(latestReflection.id)}
+          onRetry={() =>
+            latestReflection &&
+            onGenerateOverview(latestReflection.id, signalsSource)
+          }
           showError={requestForLatest?.status === "error"}
         />
-      ) : signals.length === 0 ? (
-        <NoOverviewSignals
-          entryCount={analyzedEntryCount}
-          maturity={maturity}
-          onAddEntry={onAddEntry}
-          onOpenHistory={onOpenHistory}
-        />
       ) : (
-        <EvidenceOverview
-          entries={availableEntries}
-          entryCount={analyzedEntryCount}
-          maturity={maturity}
-          onOpenDate={onOpenDate}
-          signals={signals}
-        />
+        <div className="grid gap-4">
+          {needsOverview && (
+            <OverviewUpdateStatus
+              isLoading={requestForLatest?.status === "loading"}
+              onRetry={() =>
+                latestReflection &&
+                onGenerateOverview(latestReflection.id, signalsSource)
+              }
+              showError={requestForLatest?.status === "error"}
+            />
+          )}
+          {savedSignals.length === 0 ? (
+            <NoOverviewSignals
+              entryCount={analyzedEntryCount}
+              maturity={maturity}
+              onAddEntry={onAddEntry}
+              onOpenHistory={onOpenHistory}
+            />
+          ) : (
+            <EvidenceOverview
+              entries={availableEntries}
+              onOpenDate={onOpenDate}
+              signals={savedSignals}
+            />
+          )}
+        </div>
       )}
     </>
   );
@@ -1083,78 +1134,142 @@ function NoOverviewSignals({
 
 function EvidenceOverview({
   entries,
-  entryCount,
-  maturity,
   onOpenDate,
   signals,
 }: {
   entries: Reflection[];
-  entryCount: number;
-  maturity: "early" | "established";
   onOpenDate: (date: string) => void;
   signals: NonNullable<NonNullable<Reflection["overview"]>["signals"]>;
 }) {
   return (
     <div className="grid gap-4">
-      <section className="rounded-[2rem] border border-[#5b4560]/10 bg-[#eee7ef]/52 p-5 sm:p-6">
-        <p className="text-xs font-black uppercase tracking-[0.14em] text-[#7b667d]">
-          {maturity === "early" ? "Ранний обзор" : "Накопленный обзор"}
-        </p>
-        <p className="mt-2 leading-7 text-[#66546a]">
-          Найдены только сигналы, подтверждённые минимум тремя из {entryCount}{" "}
-          {pluralize(entryCount, "записи", "записей", "записей")}.
-        </p>
-      </section>
+      <p className="px-1 text-sm font-bold leading-6 text-[#7b667d]">
+        Только подтверждённые выводы · 3+ записи
+      </p>
 
-      {signals.map((signal) => {
-        const evidence = groupSignalEvidence(signal, entries);
-        return (
-          <article
-            className="rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/86 p-5 shadow-[0_16px_45px_rgba(57,37,20,0.06)] sm:p-7"
-            key={`${signal.kind}:${signal.title}`}
-          >
-            <p className="text-xs font-black uppercase tracking-[0.14em] text-[#a96214]">
-              {signalKindLabel(signal.kind)}
-            </p>
-            <h2 className="mt-3 font-serif-display text-2xl font-black tracking-[-0.035em] sm:text-3xl">
-              {signal.title}
-            </h2>
-            <p className="mt-4 leading-8 text-[#4f4034]">{signal.finding}</p>
-
-            {signal.recommendation && (
-              <div className="mt-5 rounded-3xl bg-[#edf1e8] p-5">
-                <p className="text-xs font-black uppercase tracking-[0.12em] text-[#596a4d]">
-                  MindFlow предлагает
-                </p>
-                <p className="mt-2 leading-7 text-[#42513a]">
-                  {signal.recommendation}
-                </p>
-              </div>
-            )}
-
-            <div className="mt-5 border-t border-[#3a2a1d]/8 pt-4">
-              <p className="text-sm font-black text-[#7a6a5c]">
-                Основано на записях
-              </p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {evidence.map((item) => (
-                  <button
-                    className="rounded-full border border-[#3a2a1d]/10 px-3 py-2 text-sm font-black text-[#7a4a1d] transition hover:bg-[#3a2a1d]/5"
-                    key={item.date}
-                    onClick={() => onOpenDate(item.date)}
-                    type="button"
-                  >
-                    {formatDateShort(item.date)}
-                    {item.count > 1 ? ` · ${item.count} записи` : ""}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </article>
-        );
-      })}
+      {signals.map((signal) => (
+        <OverviewSignalCard
+          entries={entries}
+          key={`${signal.kind}:${signal.title}`}
+          onOpenDate={onOpenDate}
+          signal={signal}
+        />
+      ))}
     </div>
   );
+}
+
+function OverviewSignalCard({
+  entries,
+  onOpenDate,
+  signal,
+}: {
+  entries: Reflection[];
+  onOpenDate: (date: string) => void;
+  signal: NonNullable<NonNullable<Reflection["overview"]>["signals"]>[number];
+}) {
+  const evidence = groupSignalEvidence(signal, entries);
+  const title = hasExternalObserverVoice(signal.title)
+    ? signalKindLabel(signal.kind)
+    : signal.title;
+  const finding = safeSignalFinding(signal);
+  const recommendation =
+    signal.recommendation &&
+    !hasExternalObserverVoice(signal.recommendation)
+      ? signal.recommendation
+      : null;
+
+  return (
+    <article className="rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/86 p-5 shadow-[0_16px_45px_rgba(57,37,20,0.06)] sm:p-7">
+      <p className="text-xs font-black uppercase tracking-[0.14em] text-[#a96214]">
+        {signalKindLabel(signal.kind)}
+      </p>
+      <h2 className="mt-3 font-serif-display text-2xl font-black tracking-[-0.035em] sm:text-3xl">
+        {title}
+      </h2>
+      <p className="mt-4 leading-8 text-[#4f4034]">{finding}</p>
+
+      {recommendation && (
+        <div className="mt-5 rounded-3xl bg-[#edf1e8] p-5">
+          <p className="text-xs font-black uppercase tracking-[0.12em] text-[#596a4d]">
+            Следующий шаг
+          </p>
+          <p className="mt-2 leading-7 text-[#42513a]">{recommendation}</p>
+        </div>
+      )}
+
+      <div className="mt-5 border-t border-[#3a2a1d]/8 pt-4">
+        <p className="text-sm font-black text-[#7a6a5c]">
+          Подтверждающие записи
+        </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {evidence.map((item) => (
+            <button
+              className="rounded-full border border-[#3a2a1d]/10 px-3 py-2 text-sm font-black text-[#7a4a1d] transition hover:bg-[#3a2a1d]/5"
+              key={item.date}
+              onClick={() => onOpenDate(item.date)}
+              type="button"
+            >
+              {formatDateShort(item.date)}
+              {item.count > 1 ? ` · ${item.count} записи` : ""}
+            </button>
+          ))}
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function OverviewUpdateStatus({
+  isLoading,
+  onRetry,
+  showError,
+}: {
+  isLoading: boolean;
+  onRetry: () => void;
+  showError: boolean;
+}) {
+  if (showError) {
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-[#f3dfbd]/58 px-4 py-3 text-sm text-[#6b471f]">
+        <p className="font-bold">Сохранён прошлый обзор. Обновить его не удалось.</p>
+        <button
+          className="rounded-full border border-[#6b471f]/15 px-3 py-2 font-black transition hover:bg-white/45"
+          onClick={onRetry}
+          type="button"
+        >
+          Повторить
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <p
+      aria-live="polite"
+      className="rounded-2xl bg-[#eee7ef]/58 px-4 py-3 text-sm font-bold text-[#66546a]"
+    >
+      {isLoading
+        ? "Обновляю выводы по последним записям…"
+        : "Сохранённый обзор ожидает обновления."}
+    </p>
+  );
+}
+
+function safeSignalFinding(
+  signal: NonNullable<NonNullable<Reflection["overview"]>["signals"]>[number],
+) {
+  if (!hasExternalObserverVoice(signal.finding)) {
+    return signal.finding;
+  }
+
+  if (signal.kind === "unfinished_intention") {
+    return `Намерение подтверждено в ${signal.evidenceReflectionIds.length} записях, но его выполнение или результат позднее не зафиксированы.`;
+  }
+  if (signal.kind === "recurring_blocker") {
+    return `Один и тот же стопор подтверждён в ${signal.evidenceReflectionIds.length} записях и пока остаётся незакрытым.`;
+  }
+  return `Проверяемое предположение встречается в ${signal.evidenceReflectionIds.length} записях, но результат проверки позднее не зафиксирован.`;
 }
 
 function OverviewLoadingState({
@@ -1356,7 +1471,9 @@ function DayOverview({
 }) {
   const [todoAppRequests, setTodoAppRequests] =
     useState<TodoAppRequestState>({});
-  const primaryInsights = buildPrimaryInsights(entries);
+  const primaryInsights = buildPrimaryInsights(entries).map(
+    neutralizeExternalObserverVoice,
+  );
   const actions = groupDayActions(entries);
   const fallbackEntries = entries.filter(
     (entry) => entry.analysisSource === "fallback",
@@ -1582,7 +1699,9 @@ function DayOverview({
                             ? `Из ${action.sources.length} записей · выполнено ${completedCount}`
                             : formatTime(action.sources[0].createdAt)}
                         </span>
-                        {isPrimaryAction && actionSupport?.rationale && (
+                        {isPrimaryAction &&
+                          actionSupport?.rationale &&
+                          !hasExternalObserverVoice(actionSupport.rationale) && (
                           <span className="mt-3 block border-t border-[#9a5a13]/10 pt-3 text-sm font-normal leading-6 text-[#806344]">
                             {actionSupport.rationale}
                           </span>
@@ -1676,7 +1795,7 @@ function DayOverview({
                     {formatTime(reflection.createdAt)}
                   </span>
                   <span className="mt-1 line-clamp-2 block leading-6 text-[#6c5b4d]">
-                    {reflection.summary || "Краткий итог не сформирован."}
+                    {buildReflectionPreview(reflection)}
                   </span>
                 </span>
                 <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[#efe5d5] text-xl leading-none transition group-open:rotate-45">
@@ -1762,7 +1881,9 @@ function SessionDetails({ reflection }: { reflection: Reflection }) {
               >
                 <p className="font-black text-[#2d2219]">{repeat.title}</p>
                 <p className="mt-1 leading-7 text-[#6c5b4d]">
-                  {repeat.description}
+                  {hasExternalObserverVoice(repeat.description)
+                    ? "Связь подтверждена в нескольких записях."
+                    : repeat.description}
                 </p>
                 <p className="mt-2 text-sm font-bold text-[#8b5a22]">
                   Похожее уже было {formatDateShort(repeat.previousDate)}
@@ -1828,7 +1949,9 @@ function CompactHistory({
               {formatDate(date)}
             </p>
             <p className="mt-2 line-clamp-2 leading-6 text-[#5f5043]">
-              {items[0]?.summary || items[0]?.insights[0] || "Запись сохранена"}
+              {items[0]
+                ? buildReflectionPreview(items[0])
+                : "Запись сохранена — откройте день, чтобы посмотреть детали."}
             </p>
           </div>
           <span

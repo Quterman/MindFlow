@@ -9,6 +9,7 @@ import {
   parseReflectionAnalysis,
   parseReflectionOverview,
   parseReflectionVerification,
+  REFLECTION_ANALYSIS_VERSION,
   selectVerifiedActionSupport,
   selectVerifiedInsightTexts,
   selectVerifiedTodos,
@@ -19,7 +20,7 @@ test("accepts a valid day analysis and keeps its primary action separate", () =>
     "Я снова откладываю презентацию. Нужно составить план из пяти слайдов.";
   const analysis = parseReflectionAnalysis(
     JSON.stringify({
-      summary: "Автор снова откладывает презентацию и называет следующий шаг.",
+      summary: "Откладывание презентации повторяется; следующий шаг уже назван.",
       themes: ["Подготовка презентации"],
       insightCandidates: [
         {
@@ -68,7 +69,7 @@ test("rejects a day action that was not present in todos", () => {
           repeats: [],
           actionSupport: {
             action: "Придумать новый проект",
-            rationale: "Этот шаг не был назван автором записи.",
+            rationale: "Этот шаг не был назван в исходной записи.",
           },
         }),
         new Set(),
@@ -141,8 +142,33 @@ test("keeps the day prompt focused on one reflection", () => {
   assert.match(messages[0].content, /«меньше» не превращай в «нет»/);
   assert.match(messages[0].content, /не означает противоречие, конфликт/);
   assert.match(messages[0].content, /ActionSupport используется только внутри/);
+  assert.match(messages[0].content, /самодостаточную задачу/);
+  assert.match(messages[0].content, /не открывая исходную расшифровку/);
+  assert.match(messages[0].content, /нельзя превратить.*без догадки/);
+  assert.match(messages[0].content, /никогда не называй человека/);
+  assert.match(messages[0].content, /Факты формулируй обезличенно/);
   assert.match(messages[1].content, /Не формируй долгосрочный Обзор/);
   assert.doesNotMatch(messages[0].content, /Сейчас в фокусе/);
+  assert.equal(REFLECTION_ANALYSIS_VERSION, "mindflow-reflection-v8");
+});
+
+test("rejects external observer voice in generated day copy", () => {
+  assert.throws(
+    () =>
+      parseReflectionAnalysis(
+        JSON.stringify({
+          summary: "Автор снова возвращается к подготовке презентации.",
+          themes: ["Подготовка презентации"],
+          insightCandidates: [],
+          todos: [],
+          repeats: [],
+          actionSupport: { action: "", rationale: "" },
+        }),
+        new Set(),
+        "Снова возвращаюсь к подготовке презентации.",
+      ),
+    /external observer voice in summary/,
+  );
 });
 
 test("allows zero or more than two grounded insight candidates", () => {
@@ -202,7 +228,7 @@ test("allows zero or more than two grounded insight candidates", () => {
 test("drops only the candidate whose evidence is absent", () => {
   const analysis = parseReflectionAnalysis(
     JSON.stringify({
-      summary: "Автор продолжил самостоятельную работу во время паузы.",
+      summary: "Самостоятельная работа продолжилась во время паузы.",
       themes: ["Самодисциплина"],
       insightCandidates: [
         {
@@ -237,7 +263,7 @@ test("verifier reviews every insight and may reject an invented conflict", () =>
     },
     {
       id: "insight-2",
-      text: "Автор испытывает внутренний конфликт между отдыхом и успехом.",
+      text: "Внутренний конфликт между отдыхом и успехом не подтверждён.",
       evidence: ["планировал отдохнуть"],
     },
   ];
@@ -303,11 +329,12 @@ test("rejects incomplete insight verification", () => {
   );
 });
 
-test("verifier normalizes explicit actions and rejects transcript fragments", () => {
+test("verifier preserves useful context in self-contained actions", () => {
   const candidates = [
-    "написать Стасу",
+    "написать Стасу чтобы получить конкретику по работе",
+    "пообщаться с ИИ на тему компетенций входящего продакт-менеджера",
+    "сравнить свои навыки с требованиями к роли продакта",
     "накидать какую-нибудь шаблон",
-    "сегодня ещё надо хотя бы 3,5 04:00 грязного времени потратить",
   ];
   const { actionReviews } = parseReflectionVerification(
     JSON.stringify({
@@ -316,20 +343,28 @@ test("verifier normalizes explicit actions and rejects transcript fragments", ()
         {
           candidateId: "action-1",
           verdict: "supported",
-          normalizedAction: "Написать Стасу",
-          reason: "Автор прямо называет это следующим действием.",
+          normalizedAction: "Написать Стасу для получения конкретики по работе",
+          reason: "Это прямо названо следующим действием.",
         },
         {
           candidateId: "action-2",
-          verdict: "rejected",
-          normalizedAction: "",
-          reason: "Фраза является неграмматичным обрывком расшифровки.",
+          verdict: "supported",
+          normalizedAction:
+            "Пообщаться с ИИ о компетенциях входящего продакт-менеджера",
+          reason: "Действие, тема и контекст прямо названы в записи.",
         },
         {
           candidateId: "action-3",
+          verdict: "supported",
+          normalizedAction:
+            "Сравнить свои навыки с требованиями к роли продакта",
+          reason: "Самостоятельное будущее действие сформулировано полностью.",
+        },
+        {
+          candidateId: "action-4",
           verdict: "rejected",
           normalizedAction: "",
-          reason: "Это оценка длительности работы, а не самостоятельная задача.",
+          reason: "Фраза является неграмматичным обрывком расшифровки.",
         },
       ],
     }),
@@ -338,18 +373,54 @@ test("verifier normalizes explicit actions and rejects transcript fragments", ()
   );
 
   assert.deepEqual(selectVerifiedTodos(candidates, actionReviews), [
-    "Написать Стасу",
+    "Написать Стасу для получения конкретики по работе",
+    "Пообщаться с ИИ о компетенциях входящего продакт-менеджера",
+    "Сравнить свои навыки с требованиями к роли продакта",
   ]);
+});
+
+test("verifier rejects transcript fragments it cannot safely repair", () => {
+  const candidates = [
+    "сегодня ещё надо хотя бы 3,5 04:00 грязного времени потратить",
+    "поехав в родителям да больше времени заниматься ну вот этим всем изучением работы",
+  ];
+  const { actionReviews } = parseReflectionVerification(
+    JSON.stringify({
+      reviews: [],
+      actionReviews: [
+        {
+          candidateId: "action-1",
+          verdict: "rejected",
+          normalizedAction: "",
+          reason: "Это оценка длительности работы, а не самостоятельная задача.",
+        },
+        {
+          candidateId: "action-2",
+          verdict: "rejected",
+          normalizedAction: "",
+          reason: "Без догадки нельзя восстановить конкретное будущее действие.",
+        },
+      ],
+    }),
+    [],
+    candidates,
+  );
+
+  assert.deepEqual(selectVerifiedTodos(candidates, actionReviews), []);
 
   const messages = buildReflectionVerificationMessages({
     rawText:
-      "Надо написать Стасу. Потом накидать какую-нибудь шаблон. Сегодня ещё надо хотя бы 3,5 часа грязного времени потратить.",
+      "Сегодня ещё надо хотя бы 3,5 часа грязного времени потратить. Поехав в родителям да больше времени заниматься ну вот этим всем изучением работы.",
     insightCandidates: [],
     actionCandidates: candidates,
   });
   assert.match(messages[0].content, /оценку длительности работы/);
   assert.match(messages[0].content, /поддержи только одну наиболее полную/);
   assert.match(messages[0].content, /в инфинитиве/);
+  assert.match(messages[0].content, /Не урезай полезный смысл ради краткости/);
+  assert.match(messages[0].content, /пришлось бы угадывать смысл обрывка/);
+  assert.match(messages[0].content, /Написать коллеге для получения конкретики/);
+  assert.match(messages[0].content, /Сравнить свои навыки с требованиями/);
 });
 
 test("maps the primary action to its verified wording", () => {
@@ -362,7 +433,7 @@ test("maps the primary action to its verified wording", () => {
       candidateId: "action-1",
       verdict: "supported",
       normalizedAction: "Написать Стасу",
-      reason: "Намерение прямо названо автором.",
+      reason: "Намерение прямо названо в записи.",
     },
   ];
 
@@ -406,6 +477,8 @@ test("builds an evidence overview from separate entries, including one day", () 
   assert.match(messages[0].content, /минимум тремя разными reflection id/);
   assert.match(messages[0].content, /Частота темы сама по себе не является/);
   assert.match(messages[0].content, /Если все подтверждения сделаны в один день/);
+  assert.match(messages[0].content, /конкретный следующий шаг на «ты»/);
+  assert.match(messages[0].content, /по практической ценности/);
   assert.match(messages[0].content, /верни signals: \[\]/);
 });
 
@@ -446,7 +519,7 @@ test("accepts a grounded signal and optional recommendation", () => {
             "В трёх записях сформулировано намерение запросить критерии, но подтверждения выполнения пока нет.",
           evidenceReflectionIds: ["one", "two", "three"],
           recommendation:
-            "Отправить один конкретный вопрос и проверить, появилась ли после ответа новая информация для решения.",
+            "Отправь один конкретный вопрос и проверь, появилась ли после ответа новая информация для решения.",
         },
       ],
     }),
@@ -455,7 +528,29 @@ test("accepts a grounded signal and optional recommendation", () => {
 
   assert.equal(signals[0].kind, "unfinished_intention");
   assert.equal(signals[0].evidenceReflectionIds.length, 3);
-  assert.match(signals[0].recommendation, /Отправить один конкретный вопрос/);
+  assert.match(signals[0].recommendation, /Отправь один конкретный вопрос/);
+});
+
+test("rejects external observer voice in an overview signal", () => {
+  assert.throws(
+    () =>
+      parseReflectionOverview(
+        JSON.stringify({
+          signals: [
+            {
+              kind: "unfinished_intention",
+              title: "Запрос критериев остаётся незакрытым",
+              finding:
+                "Автор в трёх записях планирует запросить критерии, но подтверждения выполнения пока нет.",
+              evidenceReflectionIds: ["one", "two", "three"],
+              recommendation: "Отправь один конкретный вопрос.",
+            },
+          ],
+        }),
+        new Set(["one", "two", "three"]),
+      ),
+    /external observer voice in overview.signal.finding/,
+  );
 });
 
 test("rejects a signal supported by fewer than three entries", () => {
