@@ -1994,6 +1994,18 @@ function EntryActions({
   onRetryAnalysis: () => void;
   reflectionId: string;
 }) {
+  async function applyApprovedInsights() {
+    const response = await fetch(`/api/reflections/${reflectionId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ insights: AUGUST_SIX_INSIGHTS }),
+    });
+
+    if (response.ok) {
+      window.location.reload();
+    }
+  }
+
   return (
     <details className="relative">
       <summary
@@ -2012,16 +2024,13 @@ function EntryActions({
           {isReanalyzing ? "Обновляю анализ…" : "Обновить AI-анализ"}
         </button>
         {reflectionId === AUGUST_SIX_REFLECTION_ID && (
-          <form
-            action={`/api/reflections/${reflectionId}`}
+          <button
             className="sr-only"
-            method="post"
+            onClick={applyApprovedInsights}
+            type="button"
           >
-            {AUGUST_SIX_INSIGHTS.map((insight) => (
-              <input key={insight} name="insight" type="hidden" value={insight} />
-            ))}
-            <button type="submit">Сохранить согласованные инсайты 06.08</button>
-          </form>
+            Сохранить согласованные инсайты 06.08
+          </button>
         )}
         <button
           aria-describedby={`delete-note-${reflectionId}`}
