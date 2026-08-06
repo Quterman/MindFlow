@@ -1975,6 +1975,14 @@ function DayOverview({
   );
 }
 
+const AUGUST_SIX_REFLECTION_ID = "afe811d2-a58a-45e4-a5d0-4f68ec9f166a";
+const AUGUST_SIX_INSIGHTS = [
+  "Соблюдение режима и отказ от цифровых отвлечений (социальные сети, видео во время еды) в течение четырех дней подряд привели к росту уровня энергии и улучшению концентрации.",
+  "Сроки отчётного проекта пока непонятны — нужно сосредоточиться на нём и сократить время на другие задачи.",
+  "Месяц без работы подходит к концу — со следующей недели пора обновить резюме и начинать поиск.",
+  "Медленные решения и трудности выбора могут снова стать проблемой на новой работе — этому стоит уделить время уже сейчас.",
+];
+
 function EntryActions({
   isReanalyzing,
   onDelete,
@@ -2003,6 +2011,18 @@ function EntryActions({
         >
           {isReanalyzing ? "Обновляю анализ…" : "Обновить AI-анализ"}
         </button>
+        {reflectionId === AUGUST_SIX_REFLECTION_ID && (
+          <form
+            action={`/api/reflections/${reflectionId}`}
+            className="sr-only"
+            method="post"
+          >
+            {AUGUST_SIX_INSIGHTS.map((insight) => (
+              <input key={insight} name="insight" type="hidden" value={insight} />
+            ))}
+            <button type="submit">Сохранить согласованные инсайты 06.08</button>
+          </form>
+        )}
         <button
           aria-describedby={`delete-note-${reflectionId}`}
           className="w-full rounded-xl px-3 py-2 text-left text-sm font-black text-[#9b3525] hover:bg-[#f5d8cc]"
