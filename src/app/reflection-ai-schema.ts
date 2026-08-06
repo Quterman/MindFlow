@@ -1,14 +1,17 @@
 import type {
   ActionVerificationReview,
+  InsightFinalizationCoverage,
   InsightVerificationReview,
   OverviewSignal,
   ReflectionAnalysisDraft,
   ReflectionInsightCandidate,
+  SuggestedActionVerificationReview,
 } from "./reflection-analysis";
 
-export const REFLECTION_ANALYSIS_VERSION = "mindflow-reflection-v8";
+export const REFLECTION_ANALYSIS_VERSION = "mindflow-reflection-v11";
 
 const MAX_INSIGHT_CANDIDATES = 8;
+const MAX_INSIGHT_COVERAGE_LINES = 10;
 
 export const reflectionOverviewSchema = {
   type: "object",
@@ -236,10 +239,16 @@ export const reflectionVerificationSchema = {
         type: "object",
         additionalProperties: false,
         properties: {
-          candidateId: {
-            type: "string",
-            minLength: 1,
-            maxLength: 40,
+          candidateIds: {
+            type: "array",
+            minItems: 1,
+            maxItems: 4,
+            uniqueItems: true,
+            items: {
+              type: "string",
+              minLength: 1,
+              maxLength: 40,
+            },
           },
           verdict: {
             type: "string",
@@ -259,15 +268,109 @@ export const reflectionVerificationSchema = {
           },
         },
         required: [
-          "candidateId",
+          "candidateIds",
           "verdict",
           "normalizedAction",
           "reason",
         ],
       },
     },
+    suggestedAction: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        insightCandidateId: {
+          type: "string",
+          minLength: 0,
+          maxLength: 40,
+        },
+        action: {
+          type: "string",
+          minLength: 0,
+          maxLength: 160,
+        },
+        rationale: {
+          type: "string",
+          minLength: 0,
+          maxLength: 320,
+        },
+      },
+      required: ["insightCandidateId", "action", "rationale"],
+    },
   },
-  required: ["reviews", "actionReviews"],
+  required: ["reviews", "actionReviews", "suggestedAction"],
+} as const;
+
+export const reflectionInsightFinalizationSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    coverage: {
+      type: "array",
+      minItems: 1,
+      maxItems: MAX_INSIGHT_COVERAGE_LINES,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          topic: {
+            type: "string",
+            minLength: 4,
+            maxLength: 120,
+          },
+          disposition: {
+            type: "string",
+            enum: ["insight", "summary", "action", "repeat", "context"],
+          },
+          insightText: {
+            type: "string",
+            minLength: 0,
+            maxLength: 240,
+          },
+          reason: {
+            type: "string",
+            minLength: 8,
+            maxLength: 280,
+          },
+        },
+        required: ["topic", "disposition", "insightText", "reason"],
+      },
+      description:
+        "Проверка покрытия всех крупных смысловых линий текущей записи.",
+    },
+    insights: {
+      type: "array",
+      maxItems: MAX_INSIGHT_CANDIDATES,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          text: {
+            type: "string",
+            minLength: 8,
+            maxLength: 240,
+            description:
+              "Одна короткая мысль обычным русским языком: конкретный факт и понятное следствие, без канцелярита и аналитического жаргона.",
+          },
+          evidence: {
+            type: "array",
+            minItems: 1,
+            maxItems: 3,
+            uniqueItems: true,
+            items: {
+              type: "string",
+              minLength: 6,
+              maxLength: 240,
+            },
+          },
+        },
+        required: ["text", "evidence"],
+      },
+      description:
+        "Полный итоговый набор доказательных инсайтов после исправления и проверки покрытия.",
+    },
+  },
+  required: ["coverage", "insights"],
 } as const;
 
 export function parseReflectionAnalysis(
@@ -339,6 +442,7 @@ export function parseReflectionAnalysis(
       signals: null,
       signalsSource: null,
       actionSupport,
+      suggestedAction: null,
     },
   };
 }
@@ -350,6 +454,7 @@ export function parseReflectionVerification(
 ): {
   insightReviews: InsightVerificationReview[];
   actionReviews: ActionVerificationReview[];
+  suggestedAction: SuggestedActionVerificationReview | null;
 } {
   let value: unknown;
   try {
@@ -361,7 +466,8 @@ export function parseReflectionVerification(
   if (
     !isRecord(value) ||
     !Array.isArray(value.reviews) ||
-    !Array.isArray(value.actionReviews)
+    !Array.isArray(value.actionReviews) ||
+    !isRecord(value.suggestedAction)
   ) {
     throw new Error("AI reflection verification must contain all reviews.");
   }
@@ -422,22 +528,21 @@ export function parseReflectionVerification(
   const allowedActionIds = new Set(
     actionCandidates.map((_, index) => `action-${index + 1}`),
   );
-  if (value.actionReviews.length !== allowedActionIds.size) {
-    throw new Error("AI action verification did not review every candidate.");
-  }
 
   const actionReviews = value.actionReviews.map((review) => {
     if (!isRecord(review)) {
       throw new Error("AI action verification contains an invalid review.");
     }
 
-    const candidateId = requiredString(
-      review.candidateId,
+    const candidateIds = requiredStringArray(
+      review.candidateIds,
+      1,
+      4,
       1,
       40,
-      "actionVerification.candidateId",
+      "actionVerification.candidateIds",
     );
-    if (!allowedActionIds.has(candidateId)) {
+    if (candidateIds.some((candidateId) => !allowedActionIds.has(candidateId))) {
       throw new Error("AI action verification referenced an unknown candidate.");
     }
 
@@ -459,7 +564,7 @@ export function parseReflectionVerification(
     );
 
     return {
-      candidateId,
+      candidateIds,
       verdict:
         verdict === "supported"
           ? ("supported" as const)
@@ -474,14 +579,193 @@ export function parseReflectionVerification(
     };
   });
 
+  const reviewedActionIds = actionReviews.flatMap(
+    (review) => review.candidateIds,
+  );
   if (
-    new Set(actionReviews.map((review) => review.candidateId)).size !==
-    actionReviews.length
+    reviewedActionIds.length !== allowedActionIds.size ||
+    new Set(reviewedActionIds).size !== allowedActionIds.size ||
+    reviewedActionIds.some((candidateId) => !allowedActionIds.has(candidateId))
   ) {
-    throw new Error("AI action verification contains duplicate reviews.");
+    throw new Error("AI action verification did not group every candidate once.");
   }
 
-  return { insightReviews, actionReviews };
+  const suggestedAction = parseSuggestedActionVerification(
+    value.suggestedAction,
+    insightCandidates,
+    insightReviews,
+  );
+
+  return { insightReviews, actionReviews, suggestedAction };
+}
+
+export function parseReflectionInsightFinalization(
+  content: string,
+  rawText: string,
+): {
+  insights: ReflectionInsightCandidate[];
+  coverage: InsightFinalizationCoverage[];
+} {
+  let value: unknown;
+  try {
+    value = JSON.parse(content);
+  } catch {
+    throw new Error("AI insight finalization is not valid JSON.");
+  }
+
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.coverage) ||
+    value.coverage.length < 1 ||
+    value.coverage.length > MAX_INSIGHT_COVERAGE_LINES
+  ) {
+    throw new Error("AI insight finalization must contain coverage.");
+  }
+
+  const insights = parseInsightCandidates(value.insights, rawText);
+  if (insights.some(hasBureaucraticInsightLanguage)) {
+    throw new Error("AI insight finalization contains bureaucratic wording.");
+  }
+  const insightByText = new Map(
+    insights.map((insight) => [normalizeEvidence(insight.text), insight.text]),
+  );
+  const coverage = value.coverage.map((item) => {
+    if (!isRecord(item)) {
+      throw new Error("AI insight finalization contains invalid coverage.");
+    }
+
+    const disposition = requiredString(
+      item.disposition,
+      1,
+      20,
+      "insightFinalization.coverage.disposition",
+    );
+    if (
+      disposition !== "insight" &&
+      disposition !== "summary" &&
+      disposition !== "action" &&
+      disposition !== "repeat" &&
+      disposition !== "context"
+    ) {
+      throw new Error("AI insight finalization contains unknown disposition.");
+    }
+
+    const insightText = requiredNeutralString(
+      item.insightText,
+      disposition === "insight" ? 8 : 0,
+      disposition === "insight" ? 400 : 0,
+      "insightFinalization.coverage.insightText",
+    );
+    if (
+      disposition === "insight" &&
+      !insightByText.has(normalizeEvidence(insightText))
+    ) {
+      throw new Error("AI insight coverage referenced an unknown insight.");
+    }
+
+    return {
+      topic: requiredString(
+        item.topic,
+        4,
+        120,
+        "insightFinalization.coverage.topic",
+      ),
+      disposition: disposition as InsightFinalizationCoverage["disposition"],
+      insightText:
+        disposition === "insight"
+          ? insightByText.get(normalizeEvidence(insightText)) || insightText
+          : "",
+      reason: requiredString(
+        item.reason,
+        8,
+        280,
+        "insightFinalization.coverage.reason",
+      ),
+    };
+  });
+
+  const coveredInsightKeys = coverage
+    .filter((item) => item.disposition === "insight")
+    .map((item) => normalizeEvidence(item.insightText));
+  if (
+    new Set(coveredInsightKeys).size !== coveredInsightKeys.length ||
+    coveredInsightKeys.length !== insightByText.size ||
+    [...insightByText.keys()].some((key) => !coveredInsightKeys.includes(key))
+  ) {
+    throw new Error("AI insight finalization did not cover every insight once.");
+  }
+
+  const safeInsights = insights.filter(hasExplicitlySupportedCausality);
+  const safeInsightKeys = new Set(
+    safeInsights.map((insight) => normalizeEvidence(insight.text)),
+  );
+  const safeCoverage = coverage.map((item) =>
+    item.disposition === "insight" &&
+    !safeInsightKeys.has(normalizeEvidence(item.insightText))
+      ? {
+          ...item,
+          disposition: "context" as const,
+          insightText: "",
+          reason:
+            "Заявленная причинная связь не подтверждена выбранными evidence.",
+        }
+      : item,
+  );
+
+  return { insights: safeInsights, coverage: safeCoverage };
+}
+
+function parseSuggestedActionVerification(
+  value: unknown,
+  insightCandidates: ReflectionInsightCandidate[],
+  insightReviews: InsightVerificationReview[],
+): SuggestedActionVerificationReview | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  try {
+    const insightCandidateId = requiredString(
+      value.insightCandidateId,
+      0,
+      40,
+      "suggestedAction.insightCandidateId",
+    );
+    const action = requiredNeutralString(
+      value.action,
+      0,
+      160,
+      "suggestedAction.action",
+    );
+    const rationale = requiredNeutralString(
+      value.rationale,
+      0,
+      320,
+      "suggestedAction.rationale",
+    );
+    if (!insightCandidateId && !action && !rationale) {
+      return null;
+    }
+    if (!insightCandidateId || !action || !rationale) {
+      return null;
+    }
+    if (
+      !insightCandidates.some(
+        (candidate) => candidate.id === insightCandidateId,
+      ) ||
+      !insightReviews.some(
+        (review) =>
+          review.candidateId === insightCandidateId &&
+          review.verdict === "supported",
+      )
+    ) {
+      return null;
+    }
+
+    return { insightCandidateId, action, rationale };
+  } catch {
+    return null;
+  }
 }
 
 export function selectVerifiedInsightTexts(
@@ -495,7 +779,11 @@ export function selectVerifiedInsightTexts(
   );
 
   return candidates
-    .filter((candidate) => acceptedCandidateIds.has(candidate.id))
+    .filter(
+      (candidate) =>
+        acceptedCandidateIds.has(candidate.id) &&
+        hasExplicitlySupportedCausality(candidate),
+    )
     .map((candidate) => candidate.text);
 }
 
@@ -503,18 +791,28 @@ export function selectVerifiedTodos(
   candidates: string[],
   reviews: ActionVerificationReview[],
 ) {
-  const actionsByCandidateId = new Map(
-    reviews
-      .filter((review) => review.verdict === "supported")
-      .map((review) => [review.candidateId, review.normalizedAction]),
+  const candidateOrder = new Map(
+    candidates.map((_, index) => [`action-${index + 1}`, index]),
   );
+  const supportedGroups = reviews
+    .filter((review) => review.verdict === "supported")
+    .sort(
+      (left, right) =>
+        Math.min(
+          ...left.candidateIds.map(
+            (candidateId) => candidateOrder.get(candidateId) ?? Infinity,
+          ),
+        ) -
+        Math.min(
+          ...right.candidateIds.map(
+            (candidateId) => candidateOrder.get(candidateId) ?? Infinity,
+          ),
+        ),
+    );
 
   return Array.from(
     new Set(
-      candidates.flatMap((_, index) => {
-        const action = actionsByCandidateId.get(`action-${index + 1}`);
-        return action ? [action] : [];
-      }),
+      supportedGroups.map((review) => review.normalizedAction),
     ),
   );
 }
@@ -535,7 +833,7 @@ export function selectVerifiedActionSupport(
 
   const review = reviews.find(
     (item) =>
-      item.candidateId === `action-${candidateIndex + 1}` &&
+      item.candidateIds.includes(`action-${candidateIndex + 1}`) &&
       item.verdict === "supported",
   );
 
@@ -544,6 +842,52 @@ export function selectVerifiedActionSupport(
         action: review.normalizedAction,
         rationale: actionSupport.rationale,
       }
+    : null;
+}
+
+export function selectVerifiedSuggestedAction(
+  suggestion: SuggestedActionVerificationReview | null,
+  insightCandidates: ReflectionInsightCandidate[],
+  todos: string[],
+) {
+  if (!suggestion) {
+    return null;
+  }
+  if (
+    todos.some(
+      (todo) => normalizeEvidence(todo) === normalizeEvidence(suggestion.action),
+    )
+  ) {
+    return null;
+  }
+
+  const sourceInsight = insightCandidates.find(
+    (candidate) => candidate.id === suggestion.insightCandidateId,
+  );
+  if (!sourceInsight) {
+    return null;
+  }
+
+  return {
+    action: suggestion.action,
+    rationale: suggestion.rationale,
+    sourceInsight: sourceInsight.text,
+    status: "pending" as const,
+  };
+}
+
+export function retainSuggestedActionForFinalInsights<
+  T extends { sourceInsight: string },
+>(suggestion: T | null, finalInsights: string[]) {
+  if (!suggestion) {
+    return null;
+  }
+
+  return finalInsights.some(
+    (insight) =>
+      normalizeEvidence(insight) === normalizeEvidence(suggestion.sourceInsight),
+  )
+    ? suggestion
     : null;
 }
 
@@ -556,7 +900,7 @@ function parseInsightCandidates(
   }
 
   const normalizedRawText = normalizeEvidence(rawText);
-  const candidates = value.flatMap((candidate) => {
+  const candidates = value.flatMap((candidate, index) => {
     if (!isRecord(candidate)) {
       throw new Error("AI analysis contains an invalid insight candidate.");
     }
@@ -578,7 +922,7 @@ function parseInsightCandidates(
     }
 
     return [{
-      id: "",
+      id: `insight-${index + 1}`,
       text: requiredNeutralString(
         candidate.text,
         8,
@@ -593,10 +937,31 @@ function parseInsightCandidates(
     throw new Error("AI analysis contains duplicate insightCandidates.");
   }
 
-  return candidates.map((candidate, index) => ({
-    ...candidate,
-    id: `insight-${index + 1}`,
-  }));
+  return candidates;
+}
+
+const EXPLICIT_CAUSAL_LANGUAGE =
+  /(?:прив(?:од|ёл|ел|ела|ели|ело)|помога|помог|меша|влия|зависи|позволя|благодаря|из-за|поэтому)/iu;
+
+const BUREAUCRATIC_INSIGHT_LANGUAGE =
+  /(?:неопредел[её]нност[ьи] сроков|увеличени[ея] фокуса|в ущерб|переход(?:а|у|ом)? к выходу|переводит подготовку в выход|обусловлен(?:а|о|ы)?|определен(?:а|о|ы)? как|определён(?:а|о|ы)? как|осозна(?:е|ю)тся как|критическ(?:ий|ие|ими) (?:фактор|риск)|приоритизаци[яи]|реализаци[яи] решения|перераспределени[ея] времени)/iu;
+
+function hasBureaucraticInsightLanguage(
+  candidate: ReflectionInsightCandidate,
+) {
+  return BUREAUCRATIC_INSIGHT_LANGUAGE.test(candidate.text);
+}
+
+function hasExplicitlySupportedCausality(
+  candidate: ReflectionInsightCandidate,
+) {
+  if (!EXPLICIT_CAUSAL_LANGUAGE.test(candidate.text)) {
+    return true;
+  }
+
+  return candidate.evidence.some((evidence) =>
+    EXPLICIT_CAUSAL_LANGUAGE.test(evidence),
+  );
 }
 
 function normalizeEvidence(value: string) {

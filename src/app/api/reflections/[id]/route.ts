@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAuthenticatedUser } from "../../../../lib/supabase/server";
 import {
+  decideSuggestedAction,
   deleteReflection,
   updateCompletedTodos,
   updateReflection,
@@ -8,7 +9,7 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 35;
+export const maxDuration = 120;
 
 const MAX_REFLECTION_LENGTH = 12_000;
 
@@ -28,6 +29,7 @@ export async function PATCH(request: Request, context: RouteContext) {
     entryDate?: string;
     summary?: string;
     completedTodos?: unknown;
+    suggestionDecision?: unknown;
   };
 
   try {
@@ -48,6 +50,42 @@ export async function PATCH(request: Request, context: RouteContext) {
       { error: "Некорректное тело запроса." },
       { status: 400 },
     );
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, "suggestionDecision")) {
+    if (
+      body.suggestionDecision !== "accepted" &&
+      body.suggestionDecision !== "dismissed"
+    ) {
+      return NextResponse.json(
+        { error: "Передайте корректное решение по предложению MindFlow." },
+        { status: 400 },
+      );
+    }
+
+    const result = await decideSuggestedAction(
+      user.supabase,
+      user.userId,
+      id,
+      body.suggestionDecision,
+    );
+    if (result.status === "not-found") {
+      return NextResponse.json({ error: "Запись не найдена." }, { status: 404 });
+    }
+    if (result.status === "no-suggestion") {
+      return NextResponse.json(
+        { error: "У этой записи нет активного предложения MindFlow." },
+        { status: 404 },
+      );
+    }
+    if (result.status === "already-decided") {
+      return NextResponse.json(
+        { error: "По этому предложению уже принято другое решение." },
+        { status: 409 },
+      );
+    }
+
+    return NextResponse.json({ reflection: result.reflection });
   }
 
   if (Object.prototype.hasOwnProperty.call(body, "completedTodos")) {

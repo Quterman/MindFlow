@@ -2,18 +2,54 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildReflectionAnalysisMessages,
+  buildReflectionInsightFinalizationMessages,
   buildReflectionOverviewMessages,
   buildReflectionVerificationMessages,
 } from "../src/app/reflection-ai-prompt.ts";
+import { mergeReflectionInsights } from "../src/app/reflection-analysis.ts";
 import {
   parseReflectionAnalysis,
+  parseReflectionInsightFinalization,
   parseReflectionOverview,
   parseReflectionVerification,
   REFLECTION_ANALYSIS_VERSION,
+  retainSuggestedActionForFinalInsights,
   selectVerifiedActionSupport,
   selectVerifiedInsightTexts,
+  selectVerifiedSuggestedAction,
   selectVerifiedTodos,
 } from "../src/app/reflection-ai-schema.ts";
+
+test("reanalyzing the same text keeps existing insights and adds new ones", () => {
+  assert.deepEqual(
+    mergeReflectionInsights(
+      [
+        "Соблюдение режима и отказ от цифровых отвлечений в течение четырёх дней подряд привели к росту уровня энергии и улучшению концентрации.",
+      ],
+      [
+        "Сроки отчётного проекта пока непонятны — нужно сосредоточиться на нём и сократить время на другие задачи.",
+        "Месяц без работы подходит к концу — со следующей недели пора обновить резюме и начинать поиск.",
+        "Медленные решения и трудности выбора могут снова стать проблемой на новой работе — этому стоит уделить время уже сейчас.",
+      ],
+    ),
+    [
+      "Соблюдение режима и отказ от цифровых отвлечений в течение четырёх дней подряд привели к росту уровня энергии и улучшению концентрации.",
+      "Сроки отчётного проекта пока непонятны — нужно сосредоточиться на нём и сократить время на другие задачи.",
+      "Месяц без работы подходит к концу — со следующей недели пора обновить резюме и начинать поиск.",
+      "Медленные решения и трудности выбора могут снова стать проблемой на новой работе — этому стоит уделить время уже сейчас.",
+    ],
+  );
+});
+
+test("reanalyzing does not duplicate an unchanged insight", () => {
+  assert.deepEqual(
+    mergeReflectionInsights(
+      ["Сроки проекта пока непонятны."],
+      ["  сроки проекта пока непонятны.  ", "Нужно уточнить объём работы."],
+    ),
+    ["Сроки проекта пока непонятны.", "Нужно уточнить объём работы."],
+  );
+});
 
 test("accepts a valid day analysis and keeps its primary action separate", () => {
   const rawText =
@@ -149,7 +185,7 @@ test("keeps the day prompt focused on one reflection", () => {
   assert.match(messages[0].content, /Факты формулируй обезличенно/);
   assert.match(messages[1].content, /Не формируй долгосрочный Обзор/);
   assert.doesNotMatch(messages[0].content, /Сейчас в фокусе/);
-  assert.equal(REFLECTION_ANALYSIS_VERSION, "mindflow-reflection-v8");
+  assert.equal(REFLECTION_ANALYSIS_VERSION, "mindflow-reflection-v11");
 });
 
 test("rejects external observer voice in generated day copy", () => {
@@ -282,6 +318,7 @@ test("verifier reviews every insight and may reject an invented conflict", () =>
         },
       ],
       actionReviews: [],
+      suggestedAction: { insightCandidateId: "", action: "", rationale: "" },
     }),
     candidates,
     [],
@@ -305,6 +342,33 @@ test("verifier reviews every insight and may reject an invented conflict", () =>
   assert.match(messages[0].content, /При сомнении выбирай rejected/);
 });
 
+test("drops a causal insight when its own evidence does not state causality", () => {
+  const candidates = [
+    {
+      id: "insight-1",
+      text: "Отказ от Instagram привёл к росту энергии и концентрации.",
+      evidence: [
+        "четвёртый день подряд хороший подъём и энергия",
+        "меньше отвлекаюсь и исключил Instagram",
+      ],
+    },
+    {
+      id: "insight-2",
+      text: "Работа по таймеру помогает меньше отвлекаться.",
+      evidence: ["работа по таймеру помогает меньше отвлекаться"],
+    },
+  ];
+  const reviews = candidates.map((candidate) => ({
+    candidateId: candidate.id,
+    verdict: "supported",
+    reason: "Формулировка отмечена моделью как подтверждённая.",
+  }));
+
+  assert.deepEqual(selectVerifiedInsightTexts(candidates, reviews), [
+    "Работа по таймеру помогает меньше отвлекаться.",
+  ]);
+});
+
 test("rejects incomplete insight verification", () => {
   assert.throws(
     () =>
@@ -318,6 +382,11 @@ test("rejects incomplete insight verification", () => {
             },
           ],
           actionReviews: [],
+          suggestedAction: {
+            insightCandidateId: "",
+            action: "",
+            rationale: "",
+          },
         }),
         [
           { id: "insight-1", text: "Первый вывод.", evidence: ["первый"] },
@@ -326,6 +395,237 @@ test("rejects incomplete insight verification", () => {
         [],
       ),
     /did not review every candidate/,
+  );
+});
+
+test("final insight pass covers and preserves distinct grounded lines from a long entry", () => {
+  const rawText = [
+    "Возможно, отчётный проект займёт не два-три дня, поэтому надо вложить сюда больше фокуса в ущерб другим проектам.",
+    "Месяц без работы подходит к концу: на следующей неделе нужно обсудить со Стасом свою роль, доработать резюме и выйти на рынок.",
+    "Четвёртый день подряд держатся хороший режим и энергия, а работа по таймеру помогает меньше отвлекаться.",
+    "Трудности выбора и скорость принятия решений могут снова стать тяжёлым испытанием на новом месте, поэтому этому нужно уделить отдельное время.",
+  ].join(" ");
+  const insightTexts = [
+    "Сроки отчётного проекта пока непонятны — нужно сосредоточиться на нём и сократить время на другие проекты.",
+    "Месяц без работы подходит к концу — со следующей недели пора обновить резюме и начинать поиск.",
+    "Четыре дня подряд сохраняются хороший режим и энергия, а работа по таймеру помогает меньше отвлекаться.",
+    "Медленные решения могут снова стать проблемой на новой работе — этому стоит уделить отдельное время.",
+  ];
+  const finalized = parseReflectionInsightFinalization(
+    JSON.stringify({
+      coverage: [
+        {
+          topic: "Объём отчётного проекта и сужение фокуса",
+          disposition: "insight",
+          insightText: insightTexts[0],
+          reason: "Зафиксировано решение направить больше фокуса на проект.",
+        },
+        {
+          topic: "Переход от подготовки к выходу на рынок",
+          disposition: "insight",
+          insightText: insightTexts[1],
+          reason: "Срок и условия перехода прямо названы в записи.",
+        },
+        {
+          topic: "Режим, энергия и рабочая дисциплина",
+          disposition: "insight",
+          insightText: insightTexts[2],
+          reason: "Изменение удерживается четыре дня и связано с практикой таймера.",
+        },
+        {
+          topic: "Принятие решений как риск новой работы",
+          disposition: "insight",
+          insightText: insightTexts[3],
+          reason: "Риск и область отдельной работы названы прямо.",
+        },
+      ],
+      insights: [
+        {
+          text: insightTexts[0],
+          evidence: [
+            "Возможно, отчётный проект займёт не два-три дня",
+            "вложить сюда больше фокуса в ущерб другим проектам",
+          ],
+        },
+        {
+          text: insightTexts[1],
+          evidence: [
+            "Месяц без работы подходит к концу",
+            "обсудить со Стасом свою роль, доработать резюме и выйти на рынок",
+          ],
+        },
+        {
+          text: insightTexts[2],
+          evidence: [
+            "Четвёртый день подряд держатся хороший режим и энергия",
+            "работа по таймеру помогает меньше отвлекаться",
+          ],
+        },
+        {
+          text: insightTexts[3],
+          evidence: [
+            "Трудности выбора и скорость принятия решений могут снова стать тяжёлым испытанием на новом месте",
+          ],
+        },
+      ],
+    }),
+    rawText,
+  );
+
+  assert.deepEqual(
+    finalized.insights.map((insight) => insight.text),
+    insightTexts,
+  );
+  assert.equal(finalized.coverage.length, 4);
+});
+
+test("final insight pass rejects coverage that points to an absent insight", () => {
+  assert.throws(
+    () =>
+      parseReflectionInsightFinalization(
+        JSON.stringify({
+          coverage: [
+            {
+              topic: "Решение сузить фокус",
+              disposition: "insight",
+              insightText: "Нужно временно сузить фокус до одного проекта.",
+              reason: "Линия содержит самостоятельное решение.",
+            },
+          ],
+          insights: [],
+        }),
+        "Нужно временно сузить фокус до одного проекта.",
+      ),
+    /unknown insight/,
+  );
+});
+
+test("final insight pass removes unsupported causal wording after model review", () => {
+  const text =
+    "Четыре дня держатся хороший режим и энергия. Я меньше отвлекаюсь и исключил Instagram.";
+  const insight =
+    "Отказ от Instagram привёл к росту энергии и концентрации.";
+  const finalized = parseReflectionInsightFinalization(
+    JSON.stringify({
+      coverage: [
+        {
+          topic: "Режим, энергия и цифровые отвлечения",
+          disposition: "insight",
+          insightText: insight,
+          reason: "Модель связала одновременно описанные изменения.",
+        },
+      ],
+      insights: [
+        {
+          text: insight,
+          evidence: [
+            "Четыре дня держатся хороший режим и энергия",
+            "меньше отвлекаюсь и исключил Instagram",
+          ],
+        },
+      ],
+    }),
+    text,
+  );
+
+  assert.deepEqual(finalized.insights, []);
+  assert.equal(finalized.coverage[0].disposition, "context");
+  assert.match(finalized.coverage[0].reason, /причинная связь не подтверждена/);
+});
+
+test("final insight pass rejects bureaucratic user-facing wording", () => {
+  const rawText =
+    "Сроки отчётного проекта пока непонятны, поэтому нужно уделить ему больше времени и меньше заниматься другими проектами.";
+  const insight =
+    "Неопределённость сроков отчётного проекта требует увеличения фокуса на нём в ущерб другим задачам.";
+
+  assert.throws(
+    () =>
+      parseReflectionInsightFinalization(
+        JSON.stringify({
+          coverage: [
+            {
+              topic: "Сроки и фокус на отчётном проекте",
+              disposition: "insight",
+              insightText: insight,
+              reason: "Решение уделить проекту больше времени названо прямо.",
+            },
+          ],
+          insights: [
+            {
+              text: insight,
+              evidence: [
+                "Сроки отчётного проекта пока непонятны",
+                "уделить ему больше времени и меньше заниматься другими проектами",
+              ],
+            },
+          ],
+        }),
+        rawText,
+      ),
+    /bureaucratic wording/,
+  );
+});
+
+test("final insight prompt audits every line and may repair accepted wording", () => {
+  const messages = buildReflectionInsightFinalizationMessages({
+    rawText:
+      "Четыре дня держатся хороший режим и энергия. Я меньше отвлекаюсь на Instagram.",
+    summary: "Режим и рабочая дисциплина стали устойчивее.",
+    themes: ["Режим", "Рабочая дисциплина"],
+    todos: [],
+    repeats: [],
+    insightCandidates: [
+      {
+        id: "insight-1",
+        text: "Отказ от Instagram привёл к росту энергии и концентрации.",
+        evidence: ["хороший режим и энергия", "меньше отвлекаюсь"],
+      },
+    ],
+    reviews: [
+      {
+        candidateId: "insight-1",
+        verdict: "supported",
+        reason: "Изменения описаны в одной записи.",
+      },
+    ],
+    acceptedInsights: [
+      "Отказ от Instagram привёл к росту энергии и концентрации.",
+    ],
+  });
+
+  assert.match(messages[0].content, /полный итоговый набор insights/);
+  assert.match(messages[0].content, /Поля не являются взаимоисключающими/);
+  assert.match(messages[0].content, /При конфликте классификаций выбирай insight/);
+  assert.match(messages[0].content, /граница между двумя этапами/);
+  assert.match(messages[0].content, /Перепиши его осторожнее/);
+  assert.match(messages[0].content, /Соседство событий не доказывает причинность/);
+  assert.match(messages[0].content, /каждая сильная линия должна быть покрыта/);
+  assert.match(messages[0].content, /короткая заметка для себя/);
+  assert.match(messages[0].content, /Сроки отчётного проекта пока непонятны/);
+  assert.match(messages[0].content, /если так обычно не говорят по-русски/);
+  assert.match(messages[1].content, /привёл к росту энергии/);
+});
+
+test("drops a suggested action when finalization rewrites its source insight", () => {
+  const suggestion = {
+    action: "Зафиксировать один критерий выбора",
+    rationale: "Так можно проверить, что помогает принять решение.",
+    sourceInsight: "Отсутствие цели полностью блокирует выбор.",
+    status: "pending",
+  };
+
+  assert.equal(
+    retainSuggestedActionForFinalInsights(suggestion, [
+      "Неясный критерий цели усложняет выбор ежедневного фокуса.",
+    ]),
+    null,
+  );
+  assert.equal(
+    retainSuggestedActionForFinalInsights(suggestion, [
+      "  отсутствие цели полностью блокирует выбор.  ",
+    ]),
+    suggestion,
   );
 });
 
@@ -341,32 +641,33 @@ test("verifier preserves useful context in self-contained actions", () => {
       reviews: [],
       actionReviews: [
         {
-          candidateId: "action-1",
+          candidateIds: ["action-1"],
           verdict: "supported",
           normalizedAction: "Написать Стасу для получения конкретики по работе",
           reason: "Это прямо названо следующим действием.",
         },
         {
-          candidateId: "action-2",
+          candidateIds: ["action-2"],
           verdict: "supported",
           normalizedAction:
             "Пообщаться с ИИ о компетенциях входящего продакт-менеджера",
           reason: "Действие, тема и контекст прямо названы в записи.",
         },
         {
-          candidateId: "action-3",
+          candidateIds: ["action-3"],
           verdict: "supported",
           normalizedAction:
             "Сравнить свои навыки с требованиями к роли продакта",
           reason: "Самостоятельное будущее действие сформулировано полностью.",
         },
         {
-          candidateId: "action-4",
+          candidateIds: ["action-4"],
           verdict: "rejected",
           normalizedAction: "",
           reason: "Фраза является неграмматичным обрывком расшифровки.",
         },
       ],
+      suggestedAction: { insightCandidateId: "", action: "", rationale: "" },
     }),
     [],
     candidates,
@@ -389,18 +690,19 @@ test("verifier rejects transcript fragments it cannot safely repair", () => {
       reviews: [],
       actionReviews: [
         {
-          candidateId: "action-1",
+          candidateIds: ["action-1"],
           verdict: "rejected",
           normalizedAction: "",
           reason: "Это оценка длительности работы, а не самостоятельная задача.",
         },
         {
-          candidateId: "action-2",
+          candidateIds: ["action-2"],
           verdict: "rejected",
           normalizedAction: "",
           reason: "Без догадки нельзя восстановить конкретное будущее действие.",
         },
       ],
+      suggestedAction: { insightCandidateId: "", action: "", rationale: "" },
     }),
     [],
     candidates,
@@ -415,7 +717,7 @@ test("verifier rejects transcript fragments it cannot safely repair", () => {
     actionCandidates: candidates,
   });
   assert.match(messages[0].content, /оценку длительности работы/);
-  assert.match(messages[0].content, /поддержи только одну наиболее полную/);
+  assert.match(messages[0].content, /объедини их candidateIds/);
   assert.match(messages[0].content, /в инфинитиве/);
   assert.match(messages[0].content, /Не урезай полезный смысл ради краткости/);
   assert.match(messages[0].content, /пришлось бы угадывать смысл обрывка/);
@@ -430,7 +732,7 @@ test("maps the primary action to its verified wording", () => {
   };
   const reviews = [
     {
-      candidateId: "action-1",
+      candidateIds: ["action-1"],
       verdict: "supported",
       normalizedAction: "Написать Стасу",
       reason: "Намерение прямо названо в записи.",
@@ -446,15 +748,145 @@ test("maps the primary action to its verified wording", () => {
   );
 });
 
+test("groups overlapping action candidates into one verified intention", () => {
+  const candidates = [
+    "Выделить два часа на сфокусированный поиск проекта",
+    "Определиться с практическим проектом для проверки навыков",
+    "Написать Стасу для получения конкретики по работе",
+  ];
+  const { actionReviews } = parseReflectionVerification(
+    JSON.stringify({
+      reviews: [],
+      actionReviews: [
+        {
+          candidateIds: ["action-1", "action-2"],
+          verdict: "supported",
+          normalizedAction:
+            "Выделить два часа на выбор практического проекта для проверки навыков",
+          reason: "Два кандидата описывают процесс и результат одного намерения.",
+        },
+        {
+          candidateIds: ["action-3"],
+          verdict: "supported",
+          normalizedAction:
+            "Написать Стасу для получения конкретики по работе",
+          reason: "Это отдельное явно названное намерение.",
+        },
+      ],
+      suggestedAction: { insightCandidateId: "", action: "", rationale: "" },
+    }),
+    [],
+    candidates,
+  );
+
+  assert.deepEqual(selectVerifiedTodos(candidates, actionReviews), [
+    "Выделить два часа на выбор практического проекта для проверки навыков",
+    "Написать Стасу для получения конкретики по работе",
+  ]);
+});
+
+test("keeps one MindFlow suggestion linked to a supported uncovered insight", () => {
+  const insightCandidates = [
+    {
+      id: "insight-1",
+      text: "Отсутствие глобальной цели усложняет выбор ежедневного фокуса.",
+      evidence: ["отсутствии глобальной цели"],
+    },
+  ];
+  const verification = parseReflectionVerification(
+    JSON.stringify({
+      reviews: [
+        {
+          candidateId: "insight-1",
+          verdict: "supported",
+          reason: "Связь прямо сформулирована в записи.",
+        },
+      ],
+      actionReviews: [],
+      suggestedAction: {
+        insightCandidateId: "insight-1",
+        action: "Сформулировать один критерий выбора глобальной цели",
+        rationale: "Так ты проверишь, что действительно помогает выбрать фокус.",
+      },
+    }),
+    insightCandidates,
+    [],
+  );
+
+  assert.deepEqual(
+    selectVerifiedSuggestedAction(
+      verification.suggestedAction,
+      insightCandidates,
+      [],
+    ),
+    {
+      action: "Сформулировать один критерий выбора глобальной цели",
+      rationale: "Так ты проверишь, что действительно помогает выбрать фокус.",
+      sourceInsight:
+        "Отсутствие глобальной цели усложняет выбор ежедневного фокуса.",
+      status: "pending",
+    },
+  );
+  assert.equal(
+    selectVerifiedSuggestedAction(
+      verification.suggestedAction,
+      insightCandidates,
+      ["Сформулировать один критерий выбора глобальной цели"],
+    ),
+    null,
+  );
+});
+
+test("rejects action groups that reuse a candidate id", () => {
+  assert.throws(
+    () =>
+      parseReflectionVerification(
+        JSON.stringify({
+          reviews: [],
+          actionReviews: [
+            {
+              candidateIds: ["action-1"],
+              verdict: "supported",
+              normalizedAction: "Выбрать практический проект",
+              reason: "Намерение прямо названо в записи.",
+            },
+            {
+              candidateIds: ["action-1", "action-2"],
+              verdict: "supported",
+              normalizedAction: "Написать Стасу о проекте",
+              reason: "Намерение прямо названо в записи.",
+            },
+          ],
+          suggestedAction: {
+            insightCandidateId: "",
+            action: "",
+            rationale: "",
+          },
+        }),
+        [],
+        ["Выбрать практический проект", "Написать Стасу о проекте"],
+      ),
+    /did not group every candidate once/,
+  );
+});
+
 test("rejects incomplete action verification", () => {
   assert.throws(
     () =>
       parseReflectionVerification(
-        JSON.stringify({ reviews: [], actionReviews: [] }),
+        JSON.stringify({
+          reviews: [],
+          actionReviews: [],
+          suggestedAction: {
+            insightCandidateId: "",
+            action: "",
+            rationale: "",
+          },
+        }),
         [],
         ["Написать Стасу"],
       ),
-    /did not review every candidate/,
+    /did not group every candidate once/,
   );
 });
 

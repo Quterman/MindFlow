@@ -71,6 +71,34 @@ export const OVERVIEW_ANALYSIS_LIMIT = 30;
 const EXTERNAL_OBSERVER_VOICE =
   /(?:^|[^\p{L}\p{N}_])(?:автор(?:а|у|ом|е)?|пользовател(?:ь|я|ю|ем|е))(?![\p{L}\p{N}_])/iu;
 
+const SECOND_PERSON_VERBS = new Map([
+  ["видит", "видишь"],
+  ["замечает", "замечаешь"],
+  ["считает", "считаешь"],
+  ["понимает", "понимаешь"],
+  ["признает", "признаёшь"],
+  ["признаёт", "признаёшь"],
+  ["выбирает", "выбираешь"],
+  ["возвращается", "возвращаешься"],
+  ["проверяет", "проверяешь"],
+  ["может", "можешь"],
+  ["хочет", "хочешь"],
+  ["планирует", "планируешь"],
+  ["пытается", "пытаешься"],
+  ["чувствует", "чувствуешь"],
+  ["знает", "знаешь"],
+  ["связывает", "связываешь"],
+  ["сталкивается", "сталкиваешься"],
+  ["описывает", "описываешь"],
+  ["фиксирует", "фиксируешь"],
+  ["осознает", "осознаёшь"],
+  ["осознаёт", "осознаёшь"],
+  ["продолжает", "продолжаешь"],
+  ["использует", "используешь"],
+  ["переносит", "переносишь"],
+  ["отмечает", "отмечаешь"],
+]);
+
 type OverviewSourceReflection = {
   id: string;
   entryDate: string;
@@ -97,18 +125,32 @@ export function hasExternalObserverVoice(value: string) {
   return EXTERNAL_OBSERVER_VOICE.test(value);
 }
 
-export function neutralizeExternalObserverVoice(value: string) {
-  const trimmed = value.trim();
-  const withoutLeadingObserver = trimmed.replace(
-    /^(?:автор|пользователь)\s+/iu,
-    "",
-  );
+function capitalize(value: string) {
+  return `${value.charAt(0).toLocaleUpperCase("ru")}${value.slice(1)}`;
+}
 
-  if (withoutLeadingObserver !== trimmed) {
-    return `${withoutLeadingObserver.charAt(0).toUpperCase()}${withoutLeadingObserver.slice(1)}`;
+function possessivePronoun(noun: string) {
+  const normalized = noun.toLocaleLowerCase("ru");
+
+  if (
+    /^(?:действия|сомнения|наработки|навыки|планы|выводы|задачи|цели|мысли|привычки)$/u.test(
+      normalized,
+    )
+  ) {
+    return "твои";
+  }
+  if (/(?:ие|ение|ание|ство|о|е)$/u.test(normalized)) {
+    return "твоё";
+  }
+  if (/(?:ость|ность|ция|сия|ика|ина|а|я|ль|жь|шь|чь)$/u.test(normalized)) {
+    return "твоя";
   }
 
-  return trimmed
+  return "твой";
+}
+
+export function neutralizeExternalObserverVoice(value: string) {
+  let friendly = value.trim()
     .replace(
       /(?<![\p{L}\p{N}_])у (?:автора|пользователя)(?![\p{L}\p{N}_])/giu,
       "у тебя",
@@ -117,6 +159,55 @@ export function neutralizeExternalObserverVoice(value: string) {
       /(?<![\p{L}\p{N}_])для (?:автора|пользователя)(?![\p{L}\p{N}_])/giu,
       "для тебя",
     )
+    .replace(
+      /(?<![\p{L}\p{N}_])([\p{L}-]+) (?:автора|пользователя)(?![\p{L}\p{N}_])/giu,
+      (match, noun: string) => {
+        const possessive = possessivePronoun(noun);
+        const startsUppercase = noun === capitalize(noun);
+        return `${startsUppercase ? capitalize(possessive) : possessive} ${noun.toLocaleLowerCase("ru")}`;
+      },
+    );
+
+  let rewroteSubject = false;
+  friendly = friendly.replace(
+    /(?<![\p{L}\p{N}_])((?:автор|пользователь|он|она))\s+([\p{L}-]+)(?![\p{L}\p{N}_])/giu,
+    (match, subject: string, verb: string) => {
+      const secondPersonVerb = SECOND_PERSON_VERBS.get(
+        verb.toLocaleLowerCase("ru"),
+      );
+      if (!secondPersonVerb) {
+        return match;
+      }
+
+      rewroteSubject = true;
+      return `${subject === capitalize(subject) ? "Ты" : "ты"} ${secondPersonVerb}`;
+    },
+  );
+
+  if (rewroteSubject) {
+    friendly = friendly.replace(
+      /(?<![\p{L}\p{N}_])((?:и|но|затем))\s+([\p{L}-]+)(?![\p{L}\p{N}_])/giu,
+      (match, conjunction: string, verb: string) => {
+        const secondPersonVerb = SECOND_PERSON_VERBS.get(
+          verb.toLocaleLowerCase("ru"),
+        );
+        return secondPersonVerb
+          ? `${conjunction} ${secondPersonVerb}`
+          : match;
+      },
+    );
+  }
+
+  const withoutLeadingObserver = friendly.replace(
+    /^(?:автор|пользователь)\s+/iu,
+    "",
+  );
+  const personalized =
+    withoutLeadingObserver !== friendly
+      ? capitalize(withoutLeadingObserver)
+      : withoutLeadingObserver;
+
+  return personalized
     .replace(
       /(?<![\p{L}\p{N}_])(?:автора|пользователя)(?![\p{L}\p{N}_])/giu,
       "тебя",
@@ -133,6 +224,21 @@ export function neutralizeExternalObserverVoice(value: string) {
       /(?<![\p{L}\p{N}_])(?:авторе|пользователе)(?![\p{L}\p{N}_])/giu,
       "тебе",
     );
+}
+
+export function buildPrimaryInsightPreview(input: {
+  summary: string;
+  insights: string[];
+  themes: string[];
+}) {
+  const primaryInsight = buildPrimaryInsights(
+    [{ insights: input.insights }],
+    1,
+  )[0];
+
+  return primaryInsight
+    ? neutralizeExternalObserverVoice(primaryInsight)
+    : buildReflectionPreview(input);
 }
 
 export function buildReflectionPreview(input: {

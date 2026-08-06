@@ -28,17 +28,16 @@ export async function createClient() {
 
 export async function getAuthenticatedUser() {
   const supabase = await createClient();
-  const { data, error } = await supabase.auth.getClaims();
-  const userId = data?.claims?.sub;
+  const { data, error } = await supabase.auth.getUser();
+  const user = data.user;
 
-  if (error || !userId) {
+  if (error || !user) {
     return null;
   }
 
   return {
-    email:
-      typeof data.claims.email === "string" ? data.claims.email : undefined,
+    email: user.email,
     supabase,
-    userId,
+    userId: user.id,
   };
 }

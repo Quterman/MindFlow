@@ -6,6 +6,7 @@ import type {
   Reflection,
   ReflectionOverview,
 } from "./reflection-analysis";
+import { mergeReflectionInsights } from "./reflection-analysis";
 import {
   analyzeReflection,
   generateReflectionOverview,
@@ -128,8 +129,9 @@ export async function updateReflection(
     (item) => item.id !== input.id && item.entryDate <= nextDate,
   );
   const analysis = await analyzeReflection(input.rawText, previous, nextDate);
+  const reconciled = reconcileSuggestedAction(existing, analysis);
   const completedTodos = existing.completedTodos.filter((todo) =>
-    analysis.todos.includes(todo),
+    reconciled.todos.includes(todo),
   );
   const { data, error } = await supabase
     .from("mindflow_entries")
@@ -141,12 +143,12 @@ export async function updateReflection(
       completed_todos: completedTodos,
       entry_date: nextDate,
       insights: analysis.insights,
-      overview: analysis.overview,
+      overview: reconciled.overview,
       raw_text: input.rawText,
       repeats: analysis.repeats,
       summary: analysis.summary,
       themes: analysis.themes,
-      todos: analysis.todos,
+      todos: reconciled.todos,
       transcript: input.rawText,
       updated_at: new Date().toISOString(),
     })
@@ -230,6 +232,62 @@ export async function updateCompletedTodos(
   };
 }
 
+export async function decideSuggestedAction(
+  supabase: SupabaseClient,
+  userId: string,
+  id: string,
+  decision: "accepted" | "dismissed",
+) {
+  const existing = await findReflection(supabase, userId, id);
+  if (!existing) {
+    return { status: "not-found" as const };
+  }
+
+  const suggestion = existing.overview?.suggestedAction;
+  if (!suggestion) {
+    return { status: "no-suggestion" as const };
+  }
+  if (suggestion.status !== "pending") {
+    return suggestion.status === decision
+      ? { status: "updated" as const, reflection: existing }
+      : { status: "already-decided" as const };
+  }
+
+  const todos =
+    decision === "accepted" && !existing.todos.includes(suggestion.action)
+      ? [...existing.todos, suggestion.action]
+      : existing.todos;
+  const overview: ReflectionOverview = {
+    signals: existing.overview?.signals ?? null,
+    signalsSource: existing.overview?.signalsSource ?? null,
+    actionSupport: existing.overview?.actionSupport ?? null,
+    suggestedAction: { ...suggestion, status: decision },
+  };
+  const { data, error } = await supabase
+    .from("mindflow_entries")
+    .update({
+      overview,
+      todos,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .eq("user_id", userId)
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+  if (!data) {
+    return { status: "not-found" as const };
+  }
+
+  return {
+    status: "updated" as const,
+    reflection: rowToReflection(data as ReflectionRow),
+  };
+}
+
 export async function generateAndStoreReflectionOverview(
   supabase: SupabaseClient,
   userId: string,
@@ -260,6 +318,7 @@ export async function generateAndStoreReflectionOverview(
     signals,
     signalsSource,
     actionSupport: existing.overview?.actionSupport || null,
+    suggestedAction: existing.overview?.suggestedAction || null,
   };
   const { data, error } = await supabase
     .from("mindflow_entries")
@@ -297,8 +356,13 @@ export async function reanalyzeStoredReflection(
     previous,
     existing.entryDate,
   );
+  const insights = mergeReflectionInsights(
+    existing.insights,
+    analysis.insights,
+  );
+  const { overview, todos } = reconcileSuggestedAction(existing, analysis);
   const completedTodos = existing.completedTodos.filter((todo) =>
-    analysis.todos.includes(todo),
+    todos.includes(todo),
   );
   const { data, error } = await supabase
     .from("mindflow_entries")
@@ -308,12 +372,12 @@ export async function reanalyzeStoredReflection(
       analysis_source: analysis.analysisSource,
       analysis_version: analysis.analysisVersion,
       completed_todos: completedTodos,
-      insights: analysis.insights,
-      overview: analysis.overview,
+      insights,
+      overview,
       repeats: analysis.repeats,
       summary: analysis.summary,
       themes: analysis.themes,
-      todos: analysis.todos,
+      todos,
       updated_at: new Date().toISOString(),
     })
     .eq("id", id)
@@ -326,6 +390,40 @@ export async function reanalyzeStoredReflection(
   }
 
   return data ? rowToReflection(data as ReflectionRow) : null;
+}
+
+function reconcileSuggestedAction(
+  existing: Reflection,
+  analysis: { todos: string[]; overview: ReflectionOverview },
+) {
+  const preservedAcceptedSuggestion =
+    existing.overview?.suggestedAction?.status === "accepted"
+      ? existing.overview.suggestedAction
+      : null;
+  const todos = preservedAcceptedSuggestion
+    ? Array.from(
+        new Set([...analysis.todos, preservedAcceptedSuggestion.action]),
+      )
+    : analysis.todos;
+  const generatedSuggestion = analysis.overview.suggestedAction;
+  const preservedDismissedSuggestion =
+    existing.overview?.suggestedAction?.status === "dismissed" &&
+    generatedSuggestion?.action === existing.overview.suggestedAction.action &&
+    generatedSuggestion.sourceInsight ===
+      existing.overview.suggestedAction.sourceInsight
+      ? existing.overview.suggestedAction
+      : null;
+
+  return {
+    todos,
+    overview: {
+      ...analysis.overview,
+      suggestedAction:
+        preservedAcceptedSuggestion ||
+        preservedDismissedSuggestion ||
+        generatedSuggestion,
+    },
+  };
 }
 
 export async function findReflection(
@@ -413,7 +511,52 @@ function overviewValue(
         }
       : null;
 
-  return { signals, signalsSource, actionSupport };
+  const suggestedAction =
+    "suggestedAction" in value
+      ? suggestedActionValue(value.suggestedAction, allowedActions)
+      : null;
+
+  return { signals, signalsSource, actionSupport, suggestedAction };
+}
+
+function suggestedActionValue(
+  value: unknown,
+  allowedActions: Set<string>,
+): ReflectionOverview["suggestedAction"] {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    !("action" in value) ||
+    typeof value.action !== "string" ||
+    !("rationale" in value) ||
+    typeof value.rationale !== "string" ||
+    !("sourceInsight" in value) ||
+    typeof value.sourceInsight !== "string" ||
+    !("status" in value) ||
+    (value.status !== "pending" &&
+      value.status !== "accepted" &&
+      value.status !== "dismissed")
+  ) {
+    return null;
+  }
+
+  const action = value.action.trim();
+  const rationale = value.rationale.trim();
+  const sourceInsight = value.sourceInsight.trim();
+  if (
+    action.length < 6 ||
+    action.length > 160 ||
+    rationale.length === 0 ||
+    rationale.length > 320 ||
+    sourceInsight.length === 0 ||
+    sourceInsight.length > 400 ||
+    (value.status === "accepted" && !allowedActions.has(action))
+  ) {
+    return null;
+  }
+
+  return { action, rationale, sourceInsight, status: value.status };
 }
 
 function overviewSignalArray(

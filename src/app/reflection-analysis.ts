@@ -15,6 +15,12 @@ export type ReflectionOverview = {
     action: string;
     rationale: string;
   } | null;
+  suggestedAction: {
+    action: string;
+    rationale: string;
+    sourceInsight: string;
+    status: "pending" | "accepted" | "dismissed";
+  } | null;
 };
 
 export type ReflectionAnalysis = {
@@ -46,11 +52,24 @@ export type InsightVerificationReview = {
   reason: string;
 };
 
+export type InsightFinalizationCoverage = {
+  topic: string;
+  disposition: "insight" | "summary" | "action" | "repeat" | "context";
+  insightText: string;
+  reason: string;
+};
+
 export type ActionVerificationReview = {
-  candidateId: string;
+  candidateIds: string[];
   verdict: "supported" | "rejected";
   normalizedAction: string;
   reason: string;
+};
+
+export type SuggestedActionVerificationReview = {
+  insightCandidateId: string;
+  action: string;
+  rationale: string;
 };
 
 export type Reflection = {
@@ -76,6 +95,28 @@ export type Reflection = {
   createdAt: string;
   updatedAt: string;
 };
+
+export function mergeReflectionInsights(
+  existingInsights: string[],
+  generatedInsights: string[],
+) {
+  const seen = new Set<string>();
+
+  return [...existingInsights, ...generatedInsights].flatMap((insight) => {
+    const trimmed = insight.trim();
+    if (!trimmed) {
+      return [];
+    }
+
+    const key = trimmed.toLocaleLowerCase("ru").replace(/\s+/g, " ");
+    if (seen.has(key)) {
+      return [];
+    }
+
+    seen.add(key);
+    return [trimmed];
+  });
+}
 
 export function analyzeReflectionWithRules(
   rawText: string,
@@ -123,6 +164,7 @@ export function analyzeReflectionWithRules(
       signals: null,
       signalsSource: null,
       actionSupport: null,
+      suggestedAction: null,
     },
   };
 }

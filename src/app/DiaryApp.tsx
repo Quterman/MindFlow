@@ -9,6 +9,7 @@ import {
   type RefObject,
 } from "react";
 import {
+  buildPrimaryInsightPreview,
   buildReflectionPreview,
   buildOverviewSourceSignature,
   buildPrimaryInsights,
@@ -53,6 +54,12 @@ type Reflection = {
     actionSupport: {
       action: string;
       rationale: string;
+    } | null;
+    suggestedAction: {
+      action: string;
+      rationale: string;
+      sourceInsight: string;
+      status: "pending" | "accepted" | "dismissed";
     } | null;
   } | null;
   analysisSource: "ai" | "fallback" | "legacy";
@@ -142,6 +149,10 @@ export default function DiaryApp({
   const [fieldError, setFieldError] = useState("");
   const [todoError, setTodoError] = useState<TodoError | null>(null);
   const [updatingTodoKey, setUpdatingTodoKey] = useState<string | null>(null);
+  const [updatingSuggestionId, setUpdatingSuggestionId] = useState<
+    string | null
+  >(null);
+  const [suggestionError, setSuggestionError] = useState<TodoError | null>(null);
   const [reanalyzingReflectionId, setReanalyzingReflectionId] = useState<
     string | null
   >(null);
@@ -492,6 +503,48 @@ export default function DiaryApp({
     setUpdatingTodoKey(null);
   }
 
+  async function decideSuggestion(
+    reflectionId: string,
+    decision: "accepted" | "dismissed",
+  ) {
+    if (updatingSuggestionId) {
+      return;
+    }
+
+    setUpdatingSuggestionId(reflectionId);
+    setSuggestionError(null);
+    try {
+      const response = await fetch(`/api/reflections/${reflectionId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ suggestionDecision: decision }),
+      });
+      const data = (await response.json()) as {
+        error?: string;
+        reflection?: Reflection;
+      };
+      if (!response.ok || !data.reflection) {
+        throw new Error(data.error || "Не получилось сохранить решение.");
+      }
+
+      setReflections((items) =>
+        items.map((item) =>
+          item.id === data.reflection?.id ? data.reflection : item,
+        ),
+      );
+    } catch (error) {
+      setSuggestionError({
+        reflectionId,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Не получилось сохранить решение. Попробуйте ещё раз.",
+      });
+    } finally {
+      setUpdatingSuggestionId(null);
+    }
+  }
+
   async function retryReflectionAnalysis(reflectionId: string) {
     if (reanalyzingReflectionId || isSaving) {
       return;
@@ -705,12 +758,15 @@ export default function DiaryApp({
             onDelete={deleteReflection}
             onOpenDate={(date) => openHistoryDate(date, "history")}
             onRetryAnalysis={retryReflectionAnalysis}
+            onDecideSuggestion={decideSuggestion}
             onToggleTodos={toggleTodos}
             reanalyzingReflectionId={reanalyzingReflectionId}
             resultHeadingRef={resultHeadingRef}
             savedReflectionId={savedReflectionId}
             selectedDate={selectedHistoryDate}
+            suggestionError={suggestionError}
             todoError={todoError}
+            updatingSuggestionId={updatingSuggestionId}
             updatingTodoKey={updatingTodoKey}
           />
         )}
@@ -930,7 +986,7 @@ function CaptureView({
             Последняя запись
           </p>
           <p className="mt-2 font-bold leading-7">
-            {buildReflectionPreview(latestReflection)}
+            {buildPrimaryInsightPreview(latestReflection)}
           </p>
           <button
             className="mt-4 rounded-full border border-[#3a2a1d]/12 px-4 py-2 text-sm font-black text-[#7a4a1d] transition hover:bg-[#3a2a1d]/5 disabled:cursor-not-allowed disabled:opacity-50"
@@ -1353,12 +1409,15 @@ function HistoryView({
   onDelete,
   onOpenDate,
   onRetryAnalysis,
+  onDecideSuggestion,
   onToggleTodos,
   reanalyzingReflectionId,
   resultHeadingRef,
   savedReflectionId,
   selectedDate,
+  suggestionError,
   todoError,
+  updatingSuggestionId,
   updatingTodoKey,
 }: {
   backLabel: string;
@@ -1367,12 +1426,18 @@ function HistoryView({
   onDelete: (reflectionId: string) => void;
   onOpenDate: (date: string) => void;
   onRetryAnalysis: (reflectionId: string) => void;
+  onDecideSuggestion: (
+    reflectionId: string,
+    decision: "accepted" | "dismissed",
+  ) => void;
   onToggleTodos: (targets: TodoTarget[], completed: boolean) => void;
   reanalyzingReflectionId: string | null;
   resultHeadingRef: RefObject<HTMLHeadingElement | null>;
   savedReflectionId: string | null;
   selectedDate: string | null;
+  suggestionError: TodoError | null;
   todoError: TodoError | null;
+  updatingSuggestionId: string | null;
   updatingTodoKey: string | null;
 }) {
   const selectedEntries =
@@ -1437,10 +1502,13 @@ function HistoryView({
         <DayOverview
           entries={selectedEntries}
           onDelete={onDelete}
+          onDecideSuggestion={onDecideSuggestion}
           onRetryAnalysis={onRetryAnalysis}
           onToggleTodos={onToggleTodos}
           reanalyzingReflectionId={reanalyzingReflectionId}
+          suggestionError={suggestionError}
           todoError={todoError}
+          updatingSuggestionId={updatingSuggestionId}
           updatingTodoKey={updatingTodoKey}
         />
       ) : (
@@ -1455,18 +1523,27 @@ function HistoryView({
 function DayOverview({
   entries,
   onDelete,
+  onDecideSuggestion,
   onRetryAnalysis,
   onToggleTodos,
   reanalyzingReflectionId,
+  suggestionError,
   todoError,
+  updatingSuggestionId,
   updatingTodoKey,
 }: {
   entries: Reflection[];
   onDelete: (reflectionId: string) => void;
+  onDecideSuggestion: (
+    reflectionId: string,
+    decision: "accepted" | "dismissed",
+  ) => void;
   onRetryAnalysis: (reflectionId: string) => void;
   onToggleTodos: (targets: TodoTarget[], completed: boolean) => void;
   reanalyzingReflectionId: string | null;
+  suggestionError: TodoError | null;
   todoError: TodoError | null;
+  updatingSuggestionId: string | null;
   updatingTodoKey: string | null;
 }) {
   const [todoAppRequests, setTodoAppRequests] =
@@ -1475,6 +1552,11 @@ function DayOverview({
     neutralizeExternalObserverVoice,
   );
   const actions = groupDayActions(entries);
+  const pendingSuggestions = entries.flatMap((entry) =>
+    entry.overview?.suggestedAction?.status === "pending"
+      ? [{ reflectionId: entry.id, ...entry.overview.suggestedAction }]
+      : [],
+  );
   const fallbackEntries = entries.filter(
     (entry) => entry.analysisSource === "fallback",
   );
@@ -1632,7 +1714,7 @@ function DayOverview({
           className="mt-2 font-serif-display text-2xl font-black tracking-[-0.04em]"
           id="day-actions-heading"
         >
-          Следующие шаги
+          Твои шаги и намерения
         </h2>
         {orderedActions.length > 0 ? (
           <ul className="mt-4 grid gap-2">
@@ -1641,6 +1723,14 @@ function DayOverview({
                 (source) => source.completed,
               );
               const isPrimaryAction = action.todo === actionSupport?.action;
+              const isMindFlowSuggested = action.sources.some((source) =>
+                entries.some(
+                  (entry) =>
+                    entry.id === source.reflectionId &&
+                    entry.overview?.suggestedAction?.status === "accepted" &&
+                    entry.overview.suggestedAction.action === action.todo,
+                ),
+              );
               const completedCount = action.sources.filter(
                 (source) => source.completed,
               ).length;
@@ -1669,7 +1759,7 @@ function DayOverview({
                 >
                   {isPrimaryAction && (
                     <p className="mb-2 text-xs font-black uppercase tracking-[0.12em] text-[#9a5a13]">
-                      Что поможет сдвинуть · выбор ИИ
+                      Фокус среди твоих намерений
                     </p>
                   )}
                   <div className="flex items-start gap-3">
@@ -1699,6 +1789,11 @@ function DayOverview({
                             ? `Из ${action.sources.length} записей · выполнено ${completedCount}`
                             : formatTime(action.sources[0].createdAt)}
                         </span>
+                        {isMindFlowSuggested && (
+                          <span className="mt-1 block text-xs font-bold text-[#8b5a22]">
+                            Предложено MindFlow · добавлено тобой
+                          </span>
+                        )}
                         {isPrimaryAction &&
                           actionSupport?.rationale &&
                           !hasExternalObserverVoice(actionSupport.rationale) && (
@@ -1774,6 +1869,65 @@ function DayOverview({
               {todoError.message}
             </p>
           )}
+        {pendingSuggestions.length > 0 && (
+          <div className="mt-5 grid gap-3 border-t border-[#56704f]/12 pt-5">
+            {pendingSuggestions.map((suggestion) => {
+              const isUpdating =
+                updatingSuggestionId === suggestion.reflectionId;
+              const hasError =
+                suggestionError?.reflectionId === suggestion.reflectionId;
+              return (
+                <article
+                  className="rounded-2xl border border-[#a96214]/18 bg-[#fffaf1]/88 p-4"
+                  key={suggestion.reflectionId}
+                >
+                  <p className="text-xs font-black uppercase tracking-[0.12em] text-[#a96214]">
+                    MindFlow предлагает
+                  </p>
+                  <p className="mt-3 font-black leading-7">
+                    {suggestion.action}
+                  </p>
+                  <p className="mt-2 text-sm leading-6 text-[#6c5b4d]">
+                    {suggestion.rationale}
+                  </p>
+                  <p className="mt-3 border-l-2 border-[#d58b22]/45 pl-3 text-sm leading-6 text-[#806344]">
+                    Из инсайта: {neutralizeExternalObserverVoice(suggestion.sourceInsight)}
+                  </p>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      className="rounded-full bg-[#56704f] px-4 py-2.5 text-sm font-black text-white transition hover:bg-[#476241] disabled:cursor-wait disabled:opacity-60"
+                      disabled={updatingSuggestionId !== null}
+                      onClick={() =>
+                        onDecideSuggestion(suggestion.reflectionId, "accepted")
+                      }
+                      type="button"
+                    >
+                      {isUpdating ? "Сохраняю…" : "Добавить в шаги"}
+                    </button>
+                    <button
+                      className="rounded-full border border-[#3a2a1d]/12 px-4 py-2.5 text-sm font-black text-[#6c5b4d] transition hover:bg-white/80 disabled:cursor-wait disabled:opacity-60"
+                      disabled={updatingSuggestionId !== null}
+                      onClick={() =>
+                        onDecideSuggestion(suggestion.reflectionId, "dismissed")
+                      }
+                      type="button"
+                    >
+                      Не сейчас
+                    </button>
+                  </div>
+                  {hasError && (
+                    <p
+                      className="mt-3 rounded-xl bg-[#f5d8cc] p-3 text-sm font-bold text-[#7f291d]"
+                      role="alert"
+                    >
+                      {suggestionError.message}
+                    </p>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        )}
       </section>
 
       <section>

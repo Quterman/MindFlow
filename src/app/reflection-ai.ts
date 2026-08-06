@@ -4,6 +4,7 @@ import { createStructuredCompletion } from "../lib/openrouter";
 import {
   analyzeReflectionWithRules,
   type ActionVerificationReview,
+  type InsightFinalizationCoverage,
   type InsightVerificationReview,
   type Reflection,
   type ReflectionAnalysis,
@@ -11,20 +12,25 @@ import {
   type OverviewSignal,
 } from "./reflection-analysis";
 import {
+  buildReflectionInsightFinalizationMessages,
   buildReflectionVerificationMessages,
   buildReflectionAnalysisMessages,
   buildReflectionOverviewMessages,
 } from "./reflection-ai-prompt";
 import {
+  parseReflectionInsightFinalization,
   parseReflectionVerification,
   parseReflectionAnalysis,
   parseReflectionOverview,
   REFLECTION_ANALYSIS_VERSION,
+  retainSuggestedActionForFinalInsights,
   reflectionAnalysisSchema,
+  reflectionInsightFinalizationSchema,
   reflectionOverviewSchema,
   reflectionVerificationSchema,
   selectVerifiedActionSupport,
   selectVerifiedInsightTexts,
+  selectVerifiedSuggestedAction,
   selectVerifiedTodos,
 } from "./reflection-ai-schema";
 
@@ -40,6 +46,9 @@ export type GeneratedReflectionAnalysis = ReflectionAnalysis & {
     actionCandidates: string[];
     actionReviews: ActionVerificationReview[];
     verificationModel: string | null;
+    finalInsights: ReflectionInsightCandidate[];
+    finalizationCoverage: InsightFinalizationCoverage[];
+    finalizationModel: string | null;
   } | null;
 };
 
@@ -92,7 +101,12 @@ export async function analyzeReflection(
     let actionReviews: ActionVerificationReview[] = [];
     let insights: string[] = [];
     let todos: string[] = [];
+    let suggestedAction: ReflectionAnalysis["overview"]["suggestedAction"] =
+      null;
     let verificationModel: string | null = null;
+    let finalInsights: ReflectionInsightCandidate[] = [];
+    let finalizationCoverage: InsightFinalizationCoverage[] = [];
+    let finalizationModel: string | null = null;
 
     if (draft.insightCandidates.length > 0 || draft.todos.length > 0) {
       try {
@@ -127,11 +141,58 @@ export async function analyzeReflection(
           reviews,
         );
         todos = selectVerifiedTodos(draft.todos, actionReviews);
+        suggestedAction = selectVerifiedSuggestedAction(
+          parsedVerification.suggestedAction,
+          draft.insightCandidates,
+          todos,
+        );
       } catch (error) {
         console.error(
           `Reflection verification failed: ${errorMessage(error)}`,
         );
       }
+    }
+
+    try {
+      const finalization = await createStructuredCompletion({
+        messages: buildReflectionInsightFinalizationMessages({
+          rawText,
+          summary: draft.summary,
+          themes: draft.themes,
+          todos,
+          repeats: draft.repeats,
+          insightCandidates: draft.insightCandidates,
+          reviews,
+          acceptedInsights: insights,
+        }),
+        schema: reflectionInsightFinalizationSchema,
+        schemaName: "mindflow_reflection_insight_finalization",
+        maxTokens: 3_200,
+        model:
+          process.env.OPENROUTER_VERIFICATION_MODEL ||
+          DEFAULT_VERIFICATION_MODEL,
+        reasoningEffort: "medium",
+        temperature: 0,
+      });
+      finalizationModel = finalization.model;
+      if (finalization.usage) {
+        usages.push(finalization.usage);
+      }
+      const parsedFinalization = parseReflectionInsightFinalization(
+        finalization.content,
+        rawText,
+      );
+      finalInsights = parsedFinalization.insights;
+      finalizationCoverage = parsedFinalization.coverage;
+      insights = finalInsights.map((insight) => insight.text);
+      suggestedAction = retainSuggestedActionForFinalInsights(
+        suggestedAction,
+        insights,
+      );
+    } catch (error) {
+      console.error(
+        `Reflection insight finalization failed: ${errorMessage(error)}`,
+      );
     }
 
     return {
@@ -147,6 +208,7 @@ export async function analyzeReflection(
           draft.todos,
           actionReviews,
         ),
+        suggestedAction,
       },
       analysisSource: "ai",
       analysisModel: completion.model,
@@ -159,6 +221,9 @@ export async function analyzeReflection(
         actionCandidates: draft.todos,
         actionReviews,
         verificationModel,
+        finalInsights,
+        finalizationCoverage,
+        finalizationModel,
       },
     };
   } catch (error) {
