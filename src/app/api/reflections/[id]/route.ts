@@ -3,6 +3,7 @@ import { getAuthenticatedUser } from "../../../../lib/supabase/server";
 import {
   decideSuggestedAction,
   deleteReflection,
+  replaceReflectionInsights,
   updateCompletedTodos,
   updateReflection,
 } from "../../../reflection-store";
@@ -30,6 +31,7 @@ export async function PATCH(request: Request, context: RouteContext) {
     summary?: string;
     completedTodos?: unknown;
     suggestionDecision?: unknown;
+    insights?: unknown;
   };
 
   try {
@@ -119,6 +121,50 @@ export async function PATCH(request: Request, context: RouteContext) {
     }
 
     return NextResponse.json({ reflection: result.reflection });
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, "insights")) {
+    if (
+      !Array.isArray(body.insights) ||
+      body.insights.length < 1 ||
+      body.insights.length > 8 ||
+      body.insights.some(
+        (insight) =>
+          typeof insight !== "string" ||
+          insight.trim().length < 8 ||
+          insight.trim().length > 400,
+      )
+    ) {
+      return NextResponse.json(
+        { error: "Передайте корректный список инсайтов." },
+        { status: 400 },
+      );
+    }
+
+    const insights = body.insights.map((insight) => insight.trim());
+    const uniqueInsights = new Set(
+      insights.map((insight) =>
+        insight.toLocaleLowerCase("ru").replace(/\s+/g, " "),
+      ),
+    );
+    if (uniqueInsights.size !== insights.length) {
+      return NextResponse.json(
+        { error: "Инсайты не должны повторяться." },
+        { status: 400 },
+      );
+    }
+
+    const reflection = await replaceReflectionInsights(
+      user.supabase,
+      user.userId,
+      id,
+      insights,
+    );
+    if (!reflection) {
+      return NextResponse.json({ error: "Запись не найдена." }, { status: 404 });
+    }
+
+    return NextResponse.json({ reflection });
   }
 
   if (body.summary !== undefined) {

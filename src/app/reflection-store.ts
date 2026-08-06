@@ -232,6 +232,30 @@ export async function updateCompletedTodos(
   };
 }
 
+export async function replaceReflectionInsights(
+  supabase: SupabaseClient,
+  userId: string,
+  id: string,
+  insights: string[],
+) {
+  const { data, error } = await supabase
+    .from("mindflow_entries")
+    .update({
+      insights,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .eq("user_id", userId)
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data ? rowToReflection(data as ReflectionRow) : null;
+}
+
 export async function decideSuggestedAction(
   supabase: SupabaseClient,
   userId: string,
@@ -355,6 +379,7 @@ export async function reanalyzeStoredReflection(
     existing.rawText,
     previous,
     existing.entryDate,
+    { preservedInsights: existing.insights },
   );
   const insights = mergeReflectionInsights(
     existing.insights,

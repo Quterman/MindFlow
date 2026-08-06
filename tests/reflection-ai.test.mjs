@@ -592,9 +592,12 @@ test("final insight prompt audits every line and may repair accepted wording", (
     acceptedInsights: [
       "Отказ от Instagram привёл к росту энергии и концентрации.",
     ],
+    preservedInsights: [
+      "Четыре дня подряд сохраняются хороший режим и энергия.",
+    ],
   });
 
-  assert.match(messages[0].content, /полный итоговый набор insights/);
+  assert.match(messages[0].content, /полный итоговый набор новых insights/);
   assert.match(messages[0].content, /Поля не являются взаимоисключающими/);
   assert.match(messages[0].content, /При конфликте классификаций выбирай insight/);
   assert.match(messages[0].content, /граница между двумя этапами/);
@@ -602,9 +605,13 @@ test("final insight prompt audits every line and may repair accepted wording", (
   assert.match(messages[0].content, /Соседство событий не доказывает причинность/);
   assert.match(messages[0].content, /каждая сильная линия должна быть покрыта/);
   assert.match(messages[0].content, /короткая заметка для себя/);
+  assert.match(messages[0].content, /previouslySavedInsights/);
+  assert.match(messages[0].content, /верни только новые самостоятельные выводы/);
   assert.match(messages[0].content, /Сроки отчётного проекта пока непонятны/);
+  assert.match(messages[0].content, /медленные решения или трудности выбора/);
   assert.match(messages[0].content, /если так обычно не говорят по-русски/);
   assert.match(messages[1].content, /привёл к росту энергии/);
+  assert.match(messages[1].content, /Четыре дня подряд сохраняются/);
 });
 
 test("drops a suggested action when finalization rewrites its source insight", () => {

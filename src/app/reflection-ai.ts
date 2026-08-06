@@ -72,6 +72,7 @@ export async function analyzeReflection(
   rawText: string,
   previous: Reflection[],
   entryDate: string,
+  options?: { preservedInsights?: string[] },
 ): Promise<GeneratedReflectionAnalysis> {
   const generatedAt = new Date().toISOString();
   const usages: CompletionUsage[] = [];
@@ -164,6 +165,7 @@ export async function analyzeReflection(
           insightCandidates: draft.insightCandidates,
           reviews,
           acceptedInsights: insights,
+          preservedInsights: options?.preservedInsights,
         }),
         schema: reflectionInsightFinalizationSchema,
         schemaName: "mindflow_reflection_insight_finalization",
