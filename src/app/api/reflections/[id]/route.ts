@@ -124,32 +124,10 @@ export async function PATCH(request: Request, context: RouteContext) {
   }
 
   if (Object.prototype.hasOwnProperty.call(body, "insights")) {
-    if (
-      !Array.isArray(body.insights) ||
-      body.insights.length < 1 ||
-      body.insights.length > 8 ||
-      body.insights.some(
-        (insight) =>
-          typeof insight !== "string" ||
-          insight.trim().length < 8 ||
-          insight.trim().length > 400,
-      )
-    ) {
+    const insights = normalizeInsights(body.insights);
+    if (!insights) {
       return NextResponse.json(
         { error: "Передайте корректный список инсайтов." },
-        { status: 400 },
-      );
-    }
-
-    const insights = body.insights.map((insight) => insight.trim());
-    const uniqueInsights = new Set(
-      insights.map((insight) =>
-        insight.toLocaleLowerCase("ru").replace(/\s+/g, " "),
-      ),
-    );
-    if (uniqueInsights.size !== insights.length) {
-      return NextResponse.json(
-        { error: "Инсайты не должны повторяться." },
         { status: 400 },
       );
     }
@@ -228,6 +206,39 @@ export async function PATCH(request: Request, context: RouteContext) {
   return NextResponse.json({ reflection });
 }
 
+export async function POST(request: Request, context: RouteContext) {
+  const user = await getAuthenticatedUser();
+  if (!user) {
+    return NextResponse.json({ error: "Требуется вход." }, { status: 401 });
+  }
+
+  if (request.headers.get("origin") !== new URL(request.url).origin) {
+    return NextResponse.json({ error: "Недопустимый источник." }, { status: 403 });
+  }
+
+  const { id } = await context.params;
+  const formData = await request.formData();
+  const insights = normalizeInsights(formData.getAll("insight"));
+  if (!insights) {
+    return NextResponse.json(
+      { error: "Передайте корректный список инсайтов." },
+      { status: 400 },
+    );
+  }
+
+  const reflection = await replaceReflectionInsights(
+    user.supabase,
+    user.userId,
+    id,
+    insights,
+  );
+  if (!reflection) {
+    return NextResponse.json({ error: "Запись не найдена." }, { status: 404 });
+  }
+
+  return NextResponse.json({ reflection });
+}
+
 export async function DELETE(_request: Request, context: RouteContext) {
   const user = await getAuthenticatedUser();
   if (!user) {
@@ -238,4 +249,29 @@ export async function DELETE(_request: Request, context: RouteContext) {
   await deleteReflection(user.supabase, user.userId, id);
 
   return NextResponse.json({ ok: true });
+}
+
+function normalizeInsights(value: unknown) {
+  if (
+    !Array.isArray(value) ||
+    value.length < 1 ||
+    value.length > 8 ||
+    value.some(
+      (insight) =>
+        typeof insight !== "string" ||
+        insight.trim().length < 8 ||
+        insight.trim().length > 400,
+    )
+  ) {
+    return null;
+  }
+
+  const insights = value.map((insight) => insight.trim());
+  const uniqueInsights = new Set(
+    insights.map((insight) =>
+      insight.toLocaleLowerCase("ru").replace(/\s+/g, " "),
+    ),
+  );
+
+  return uniqueInsights.size === insights.length ? insights : null;
 }
