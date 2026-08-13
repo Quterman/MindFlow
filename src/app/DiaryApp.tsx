@@ -9,9 +9,9 @@ import {
   type RefObject,
 } from "react";
 import {
-  buildPrimaryInsightPreview,
   buildReflectionPreview,
   buildOverviewSourceSignature,
+  buildOverviewStats,
   buildPrimaryInsights,
   getOverviewMaturity,
   groupDayActions,
@@ -23,6 +23,8 @@ import {
   buildTodoAppImportPayload,
   getPrimaryTodoSource,
 } from "./todo-app-import";
+import MindFlowMark from "./MindFlowMark";
+import styles from "./DiaryApp.module.css";
 
 type Reflection = {
   id: string;
@@ -190,8 +192,6 @@ export default function DiaryApp({
       return acc;
     }, {});
   }, [reflections]);
-
-  const latestReflection = reflections[0] || null;
 
   async function saveReflection() {
     if (isSaving || isRecording) {
@@ -656,123 +656,130 @@ export default function DiaryApp({
   }
 
   return (
-    <main className="min-h-screen bg-[#f6efe3] pb-[calc(7rem+env(safe-area-inset-bottom))] text-[#231b14] sm:pb-8">
-      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_20%_0%,rgba(214,139,35,0.14),transparent_25rem),radial-gradient(circle_at_90%_10%,rgba(88,105,88,0.14),transparent_28rem)]" />
-
-      <div
-        className="relative mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 py-6 sm:px-6"
-        ref={topRef}
-      >
-        <div className="flex items-center justify-between gap-3 px-1 text-sm text-[#6c5b4d]">
-          <p className="min-w-0 truncate" title={userEmail}>
-            <span className="font-black text-[#8b5a22]">MindFlow</span>
-            <span aria-hidden="true"> · </span>
-            <span>{userEmail}</span>
-          </p>
-          <form action="/auth/signout" method="post">
-            <button
-              className="shrink-0 rounded-full border border-[#3a2a1d]/10 px-3 py-2 font-bold text-[#7a4a1d] transition hover:bg-[#3a2a1d]/5"
-              type="submit"
-            >
-              Выйти
-            </button>
-          </form>
-        </div>
-
-        <div className="hidden sm:block">
+    <main className={styles.appRoot}>
+      <div className={styles.appShell} ref={topRef}>
+        <aside className={styles.sidebar}>
+          <MindFlowBrand />
           <DiaryNavigation
             activeView={activeView}
             disabled={isSaving}
+            sidebar
             onChange={changeView}
           />
+
+          <div className={styles.sidebarFooter}>
+            <div className={styles.profile} title={userEmail}>
+              <span className={styles.avatar} aria-hidden="true">
+                {userEmail.slice(0, 1) || "M"}
+              </span>
+              <span className={styles.profileCopy}>
+                <strong>{userEmail.split("@")[0] || "MindFlow"}</strong>
+                <span>Личный дневник</span>
+              </span>
+            </div>
+            <form action="/auth/signout" method="post">
+              <button className={styles.signOutButton} type="submit">
+                Выйти из аккаунта
+              </button>
+            </form>
+          </div>
+        </aside>
+
+        <div className={styles.workspace}>
+          <div className={styles.mobileHeader}>
+            <MindFlowBrand />
+            <form action="/auth/signout" method="post">
+              <button className={styles.signOutButton} type="submit">
+                Выйти
+              </button>
+            </form>
+          </div>
+
+          <div className={styles.contentFrame}>
+            {message && activeView !== "capture" && (
+              <p
+                aria-live="polite"
+                className="mb-5 rounded-2xl bg-[#efe0c8]/72 p-3 text-sm font-bold text-[#695744]"
+              >
+                {message}
+              </p>
+            )}
+
+            {activeView === "capture" && (
+              <CaptureView
+                entryDate={entryDate}
+                fieldError={fieldError}
+                isRecording={isRecording}
+                isSaving={isSaving}
+                message={message}
+                onChangeDate={setEntryDate}
+                onChangeText={(nextText) => {
+                  setRawText(nextText);
+                  if (nextText.trim().length >= 8) {
+                    setFieldError("");
+                  }
+                }}
+                onClear={() => {
+                  setRawText("");
+                  setFieldError("");
+                }}
+                onSave={saveReflection}
+                onToggleRecording={toggleRecording}
+                rawText={rawText}
+                textareaRef={textareaRef}
+              />
+            )}
+
+            {activeView === "overview" && (
+              <OverviewView
+                entries={reflections}
+                onGenerateOverview={generateOverview}
+                onAddEntry={addAnotherEntry}
+                onOpenHistory={() => changeView("history")}
+                onOpenDate={(date) => openHistoryDate(date, "overview")}
+                overviewRequest={overviewRequest}
+              />
+            )}
+
+            {activeView === "history" && (
+              <HistoryView
+                groupedByDate={groupedByDate}
+                onBack={() => {
+                  if (dayReturnView === "history") {
+                    setSelectedHistoryDate(null);
+                    setSavedReflectionId(null);
+                    setTodoError(null);
+                    return;
+                  }
+                  changeView(dayReturnView);
+                }}
+                backLabel={
+                  dayReturnView === "overview"
+                    ? "Назад в обзор"
+                    : dayReturnView === "capture"
+                      ? "Назад к записи"
+                      : "Назад к дням"
+                }
+                onDelete={deleteReflection}
+                onOpenDate={(date) => openHistoryDate(date, "history")}
+                onRetryAnalysis={retryReflectionAnalysis}
+                onDecideSuggestion={decideSuggestion}
+                onToggleTodos={toggleTodos}
+                reanalyzingReflectionId={reanalyzingReflectionId}
+                resultHeadingRef={resultHeadingRef}
+                savedReflectionId={savedReflectionId}
+                selectedDate={selectedHistoryDate}
+                suggestionError={suggestionError}
+                todoError={todoError}
+                updatingSuggestionId={updatingSuggestionId}
+                updatingTodoKey={updatingTodoKey}
+              />
+            )}
+          </div>
         </div>
-
-        {message && activeView !== "capture" && (
-          <p
-            aria-live="polite"
-            className="rounded-2xl bg-[#efe0c8]/72 p-3 text-sm font-bold text-[#695744]"
-          >
-            {message}
-          </p>
-        )}
-
-        {activeView === "capture" && (
-          <CaptureView
-            entryDate={entryDate}
-            fieldError={fieldError}
-            isRecording={isRecording}
-            isSaving={isSaving}
-            latestReflection={latestReflection}
-            message={message}
-            onChangeDate={setEntryDate}
-            onChangeText={(nextText) => {
-              setRawText(nextText);
-              if (nextText.trim().length >= 8) {
-                setFieldError("");
-              }
-            }}
-            onClear={() => {
-              setRawText("");
-              setFieldError("");
-            }}
-            onOpenLatest={(reflection) => {
-              openHistoryDate(reflection.entryDate, "capture");
-            }}
-            onSave={saveReflection}
-            onToggleRecording={toggleRecording}
-            rawText={rawText}
-            textareaRef={textareaRef}
-          />
-        )}
-
-        {activeView === "overview" && (
-          <OverviewView
-            entries={reflections}
-            onGenerateOverview={generateOverview}
-            onAddEntry={addAnotherEntry}
-            onOpenHistory={() => changeView("history")}
-            onOpenDate={(date) => openHistoryDate(date, "overview")}
-            overviewRequest={overviewRequest}
-          />
-        )}
-
-        {activeView === "history" && (
-          <HistoryView
-            groupedByDate={groupedByDate}
-            onBack={() => {
-              if (dayReturnView === "history") {
-                setSelectedHistoryDate(null);
-                setSavedReflectionId(null);
-                setTodoError(null);
-                return;
-              }
-              changeView(dayReturnView);
-            }}
-            backLabel={
-              dayReturnView === "overview"
-                ? "Назад в обзор"
-                : dayReturnView === "capture"
-                  ? "Назад к записи"
-                  : "Назад к дням"
-            }
-            onDelete={deleteReflection}
-            onOpenDate={(date) => openHistoryDate(date, "history")}
-            onRetryAnalysis={retryReflectionAnalysis}
-            onDecideSuggestion={decideSuggestion}
-            onToggleTodos={toggleTodos}
-            reanalyzingReflectionId={reanalyzingReflectionId}
-            resultHeadingRef={resultHeadingRef}
-            savedReflectionId={savedReflectionId}
-            selectedDate={selectedHistoryDate}
-            suggestionError={suggestionError}
-            todoError={todoError}
-            updatingSuggestionId={updatingSuggestionId}
-            updatingTodoKey={updatingTodoKey}
-          />
-        )}
       </div>
 
-      <div className="sm:hidden">
+      <div className={styles.mobileNavigation}>
         <DiaryNavigation
           activeView={activeView}
           disabled={isSaving}
@@ -788,18 +795,49 @@ function DiaryNavigation({
   activeView,
   disabled,
   mobile = false,
+  sidebar = false,
   onChange,
 }: {
   activeView: DiaryView;
   disabled: boolean;
   mobile?: boolean;
+  sidebar?: boolean;
   onChange: (view: DiaryView) => void;
 }) {
-  const items: Array<{ id: DiaryView; label: string }> = [
-    { id: "capture", label: "Запись" },
-    { id: "history", label: "История" },
-    { id: "overview", label: "Обзор" },
+  const items: Array<{
+    id: DiaryView;
+    icon: "capture" | "history" | "overview";
+    label: string;
+  }> = [
+    { id: "capture", icon: "capture", label: "Запись" },
+    { id: "history", icon: "history", label: "История" },
+    { id: "overview", icon: "overview", label: "Обзор" },
   ];
+
+  if (sidebar) {
+    return (
+      <nav aria-label="Разделы дневника" className={styles.sidebarNav}>
+        {items.map((item) => {
+          const isActive = activeView === item.id;
+          return (
+            <button
+              aria-current={isActive ? "page" : undefined}
+              className={`${styles.sidebarNavButton} ${
+                isActive ? styles.sidebarNavButtonActive : ""
+              }`}
+              disabled={disabled}
+              key={item.id}
+              onClick={() => onChange(item.id)}
+              type="button"
+            >
+              <DiaryIcon name={item.icon} />
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+      </nav>
+    );
+  }
 
   return (
     <nav
@@ -849,12 +887,10 @@ function CaptureView({
   fieldError,
   isRecording,
   isSaving,
-  latestReflection,
   message,
   onChangeDate,
   onChangeText,
   onClear,
-  onOpenLatest,
   onSave,
   onToggleRecording,
   rawText,
@@ -864,55 +900,55 @@ function CaptureView({
   fieldError: string;
   isRecording: boolean;
   isSaving: boolean;
-  latestReflection: Reflection | null;
   message: string;
   onChangeDate: (date: string) => void;
   onChangeText: (text: string) => void;
   onClear: () => void;
-  onOpenLatest: (reflection: Reflection) => void;
   onSave: () => void;
   onToggleRecording: () => void;
   rawText: string;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
 }) {
   return (
-    <>
-      <header className="px-1 py-2">
-        <p className="text-sm font-bold text-[#8b5a22]">{formatDate(entryDate)}</p>
-        <h1 className="mt-2 font-serif-display text-4xl font-black leading-none tracking-[-0.06em] sm:text-5xl">
-          Что сейчас крутится в голове?
-        </h1>
-        <p className="mt-3 max-w-2xl text-base leading-7 text-[#6c5b4d]">
-          Запишите голосом или вставьте текст. Дневник соберёт итог, заметит
-          важное и покажет, что возвращается снова.
-        </p>
-      </header>
+    <div className={styles.captureGrid}>
+      <div className={styles.captureMain}>
+        <header className={styles.captureHeader}>
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.14em] text-[#a96214]">
+              {formatDate(entryDate)}
+            </p>
+            <h1 className="mt-3 max-w-3xl font-serif-display text-4xl font-black leading-none tracking-[-0.06em] sm:text-5xl xl:text-[3.65rem]">
+              Что сейчас крутится в голове?
+            </h1>
+            <p className="mt-4 max-w-2xl text-base leading-7 text-[#6c5b4d]">
+              Можно говорить как есть. MindFlow соберёт итог, заметит важное и
+              сохранит нить мысли.
+            </p>
+          </div>
+        </header>
 
-      <section className="rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/86 p-5 shadow-[0_18px_55px_rgba(57,37,20,0.07)]">
-        <div className="grid gap-3">
-          <label className="text-sm font-bold text-[#8b5a22]" htmlFor="entry-date">
-            День записи
-          </label>
-          <input
-            className="w-full rounded-2xl border border-[#3a2a1d]/10 bg-white/72 px-4 py-3 text-[#3a2a1d] outline-none transition focus:border-[#a96214]"
-            disabled={isSaving}
-            id="entry-date"
-            onChange={(event) => onChangeDate(event.target.value || today())}
-            type="date"
-            value={entryDate}
-          />
+        <section className={styles.editorCard}>
+          <div className={styles.editorTopline}>
+            <label className={styles.editorLabel} htmlFor="reflection-text">
+              Новая рефлексия
+            </label>
+            <label className={styles.editorDateLabel} htmlFor="entry-date">
+              <span className="sr-only">День записи</span>
+              <input
+                className={styles.editorDateInput}
+                disabled={isSaving}
+                id="entry-date"
+                onChange={(event) => onChangeDate(event.target.value || today())}
+                type="date"
+                value={entryDate}
+              />
+            </label>
+          </div>
 
-          <label className="sr-only" htmlFor="reflection-text">
-            Текст рефлексии
-          </label>
           <textarea
             aria-describedby={fieldError ? "reflection-text-error" : undefined}
             aria-invalid={fieldError ? "true" : "false"}
-            className={`min-h-40 w-full resize-y rounded-[1.5rem] border bg-white/72 p-4 leading-7 outline-none transition placeholder:text-[#7a6a5c]/42 ${
-              fieldError
-                ? "border-[#b6452c] focus:border-[#b6452c] focus:ring-2 focus:ring-[#b6452c]/20"
-                : "border-[#3a2a1d]/10 focus:border-[#a96214]"
-            }`}
+            className={styles.editorTextarea}
             disabled={isSaving}
             id="reflection-text"
             maxLength={12_000}
@@ -920,7 +956,7 @@ function CaptureView({
             placeholder={
               isRecording
                 ? "Слушаю… говорите свободно, ваши мысли появятся здесь."
-                : "Нажмите «Запись» и говорите — ваши мысли появятся здесь. Или напишите их вручную."
+                : "Начните говорить или запишите мысль вручную…"
             }
             ref={textareaRef}
             value={rawText}
@@ -928,7 +964,7 @@ function CaptureView({
 
           {fieldError && (
             <p
-              className="rounded-2xl bg-[#f5d8cc] p-3 text-sm font-bold text-[#7f291d]"
+              className="mx-4 mb-3 rounded-2xl bg-[#f5d8cc] p-3 text-sm font-bold text-[#7f291d]"
               id="reflection-text-error"
               role="alert"
             >
@@ -936,23 +972,23 @@ function CaptureView({
             </p>
           )}
 
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <div className={styles.editorFooter}>
             <button
               aria-label={isRecording ? "Остановить запись" : "Начать запись"}
-              className={`inline-flex items-center justify-center gap-3 rounded-full px-5 py-3 font-black transition hover:-translate-y-0.5 ${
+              className={`inline-flex items-center justify-center gap-3 rounded-2xl px-4 py-3 font-black transition hover:-translate-y-0.5 ${
                 isRecording
                   ? "bg-[#d66f2b] text-white shadow-[0_10px_28px_rgba(214,111,43,0.22)]"
-                  : "bg-[#efe0c8] text-[#3a2a1d] hover:bg-[#ead6b8]"
+                  : "border border-[#3a2a1d]/10 bg-white/75 text-[#3a2a1d] hover:bg-white"
               }`}
               disabled={isSaving}
               onClick={onToggleRecording}
               type="button"
             >
               <RecorderWave active={isRecording} />
-              {isRecording ? "Слушаю" : "Запись"}
+              {isRecording ? "Слушаю" : "Начать запись"}
             </button>
             <button
-              className="rounded-full bg-[#221a13] px-5 py-3 font-black text-[#fff4df] transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
+              className="ml-auto rounded-2xl bg-[#221a13] px-5 py-3 font-black text-[#fff4df] transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
               disabled={isSaving || isRecording}
               onClick={onSave}
               type="button"
@@ -960,7 +996,8 @@ function CaptureView({
               {isSaving ? "Разбираю..." : "Разобрать запись"}
             </button>
             <button
-              className="rounded-full border border-[#3a2a1d]/10 px-5 py-3 font-bold text-[#7a4a1d] transition hover:bg-[#3a2a1d]/5"
+              aria-label="Очистить текст"
+              className="rounded-2xl border border-[#3a2a1d]/10 px-4 py-3 font-bold text-[#7a4a1d] transition hover:bg-white/70"
               disabled={isSaving}
               onClick={onClear}
               type="button"
@@ -968,7 +1005,7 @@ function CaptureView({
               Очистить
             </button>
           </div>
-        </div>
+        </section>
 
         {message && (
           <p
@@ -978,27 +1015,8 @@ function CaptureView({
             {message}
           </p>
         )}
-      </section>
-
-      {latestReflection && (
-        <section className="rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/74 p-5">
-          <p className="text-sm font-black uppercase tracking-[0.12em] text-[#8b5a22]">
-            Последняя запись
-          </p>
-          <p className="mt-2 font-bold leading-7">
-            {buildPrimaryInsightPreview(latestReflection)}
-          </p>
-          <button
-            className="mt-4 rounded-full border border-[#3a2a1d]/12 px-4 py-2 text-sm font-black text-[#7a4a1d] transition hover:bg-[#3a2a1d]/5 disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={isSaving}
-            onClick={() => onOpenLatest(latestReflection)}
-            type="button"
-          >
-            Открыть {latestReflection.entryDate === today() ? "сегодня" : "день"}
-          </button>
-        </section>
-      )}
-    </>
+      </div>
+    </div>
   );
 }
 
@@ -1023,6 +1041,7 @@ function OverviewView({
   const availableEntries = entries.filter((entry) => entry.entryDate <= today());
   const entryCount = availableEntries.length;
   const analyzedEntryCount = Math.min(entryCount, OVERVIEW_ANALYSIS_LIMIT);
+  const stats = buildOverviewStats(availableEntries, today());
   const maturity = getOverviewMaturity(entryCount);
   const latestReflection = availableEntries[0] || null;
   const signalsSource = buildOverviewSourceSignature(availableEntries);
@@ -1053,58 +1072,58 @@ function OverviewView({
   ]);
 
   return (
-    <>
-      <header className="px-1 py-2">
-        <p className="text-xs font-black uppercase tracking-[0.14em] text-[#a96214]">
-          {entryCount > 0
-            ? `${entryCount} ${pluralize(entryCount, "запись", "записи", "записей")}`
-            : "История ещё не началась"}
-        </p>
-        <h1 className="mt-2 font-serif-display text-4xl font-black leading-none tracking-[-0.06em] sm:text-5xl">
+    <div className={styles.overviewFrame}>
+      <header className={styles.overviewHeader}>
+        <p>Ваш дневник</p>
+        <h1 className="font-serif-display text-4xl font-black leading-none tracking-[-0.06em] sm:text-5xl">
           Обзор
         </h1>
       </header>
 
-      {maturity === "collecting" ? (
-        <CollectingOverview entryCount={entryCount} onAddEntry={onAddEntry} />
-      ) : savedSignals === null ? (
-        <OverviewLoadingState
-          isLoading={requestForLatest?.status === "loading"}
-          onRetry={() =>
-            latestReflection &&
-            onGenerateOverview(latestReflection.id, signalsSource)
-          }
-          showError={requestForLatest?.status === "error"}
-        />
-      ) : (
-        <div className="grid gap-4">
-          {needsOverview && (
-            <OverviewUpdateStatus
-              isLoading={requestForLatest?.status === "loading"}
-              onRetry={() =>
-                latestReflection &&
-                onGenerateOverview(latestReflection.id, signalsSource)
-              }
-              showError={requestForLatest?.status === "error"}
-            />
-          )}
-          {savedSignals.length === 0 ? (
-            <NoOverviewSignals
-              entryCount={analyzedEntryCount}
-              maturity={maturity}
-              onAddEntry={onAddEntry}
-              onOpenHistory={onOpenHistory}
-            />
-          ) : (
-            <EvidenceOverview
-              entries={availableEntries}
-              onOpenDate={onOpenDate}
-              signals={savedSignals}
-            />
-          )}
-        </div>
-      )}
-    </>
+      <OverviewRhythm stats={stats} />
+
+      <div className={styles.overviewBody}>
+        {maturity === "collecting" ? (
+          <CollectingOverview entryCount={entryCount} onAddEntry={onAddEntry} />
+        ) : savedSignals === null ? (
+          <OverviewLoadingState
+            isLoading={requestForLatest?.status === "loading"}
+            onRetry={() =>
+              latestReflection &&
+              onGenerateOverview(latestReflection.id, signalsSource)
+            }
+            showError={requestForLatest?.status === "error"}
+          />
+        ) : (
+          <div className="grid gap-4">
+            {needsOverview && (
+              <OverviewUpdateStatus
+                isLoading={requestForLatest?.status === "loading"}
+                onRetry={() =>
+                  latestReflection &&
+                  onGenerateOverview(latestReflection.id, signalsSource)
+                }
+                showError={requestForLatest?.status === "error"}
+              />
+            )}
+            {savedSignals.length === 0 ? (
+              <NoOverviewSignals
+                entryCount={analyzedEntryCount}
+                maturity={maturity}
+                onAddEntry={onAddEntry}
+                onOpenHistory={onOpenHistory}
+              />
+            ) : (
+              <EvidenceOverview
+                entries={availableEntries}
+                onOpenDate={onOpenDate}
+                signals={savedSignals}
+              />
+            )}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -1197,31 +1216,163 @@ function EvidenceOverview({
   onOpenDate: (date: string) => void;
   signals: NonNullable<NonNullable<Reflection["overview"]>["signals"]>;
 }) {
-  return (
-    <div className="grid gap-4">
-      <p className="px-1 text-sm font-bold leading-6 text-[#7b667d]">
-        Только подтверждённые выводы · 3+ записи
-      </p>
+  const primarySignal = signals[0];
+  const [expandedSignalKey, setExpandedSignalKey] = useState<string | null>(
+    null,
+  );
+  if (!primarySignal) {
+    return null;
+  }
+  const secondarySignals = signals.slice(1);
 
-      {signals.map((signal) => (
-        <OverviewSignalCard
-          entries={entries}
-          key={`${signal.kind}:${signal.title}`}
-          onOpenDate={onOpenDate}
-          signal={signal}
-        />
-      ))}
+  return (
+    <div className={styles.overviewEvidence}>
+      <div className={styles.overviewSectionHeading}>
+        <p>Что видно сейчас</p>
+        <span>Подтверждено тремя и более записями</span>
+      </div>
+
+      <OverviewSignalCard
+        entries={entries}
+        onOpenDate={onOpenDate}
+        signal={primarySignal}
+      />
+
+      {secondarySignals.length > 0 && (
+        <aside
+          aria-label="Другие подтверждённые сигналы"
+          className={styles.overviewSecondary}
+        >
+          <p className={styles.overviewSecondaryLabel}>
+            <span>Ещё сигналы</span>
+            <span>по важности</span>
+          </p>
+          <div className={styles.overviewSecondaryCards}>
+            {secondarySignals.map((signal) => {
+              const signalKey = `${signal.kind}:${signal.title}`;
+              return (
+                <OverviewSignalCard
+                  compact
+                  entries={entries}
+                  expanded={expandedSignalKey === signalKey}
+                  key={signalKey}
+                  onOpenDate={onOpenDate}
+                  onToggleExpanded={() =>
+                    setExpandedSignalKey((currentKey) =>
+                      currentKey === signalKey ? null : signalKey,
+                    )
+                  }
+                  signal={signal}
+                />
+              );
+            })}
+          </div>
+        </aside>
+      )}
     </div>
   );
 }
 
+function OverviewRhythm({
+  stats,
+}: {
+  stats: ReturnType<typeof buildOverviewStats>;
+}) {
+  const activeDaysLabel = pluralize(
+    stats.activeDays,
+    "день",
+    "дня",
+    "дней",
+  );
+  const entriesLabel = pluralize(
+    stats.totalEntries,
+    "запись",
+    "записи",
+    "записей",
+  );
+  const streakLabel = pluralize(
+    stats.longestStreak,
+    "день",
+    "дня",
+    "дней",
+  );
+  const completedLabel = pluralize(
+    stats.completedActions,
+    "задача доведена до конца",
+    "задачи доведены до конца",
+    "задач доведено до конца",
+  );
+  const streakCopy =
+    stats.longestStreak > 1
+      ? `Лучшая серия — ${stats.longestStreak} ${streakLabel} подряд.`
+      : "Лучшая серия пока — 1 день.";
+
+  return (
+    <section
+      aria-labelledby="overview-rhythm-heading"
+      className={styles.overviewRhythm}
+    >
+      <div className={styles.overviewRhythmIntro}>
+        <p>История ритма</p>
+        <h2 id="overview-rhythm-heading">
+          {stats.activeDays} {activeDaysLabel} с MindFlow
+        </h2>
+        <span>
+          {stats.totalEntries > 0
+            ? `За это время появилось ${stats.totalEntries} ${entriesLabel}. ${streakCopy}`
+            : "Здесь постепенно проявится ваш собственный ритм записей."}
+        </span>
+      </div>
+
+      <div className={styles.overviewRhythmCompletion}>
+        <span aria-hidden="true" className={styles.overviewRhythmCheck}>
+          ✓
+        </span>
+        <strong>{stats.completedActions}</strong>
+        <span>{completedLabel}</span>
+      </div>
+
+      <div className={styles.overviewActivity}>
+        <div className={styles.overviewActivityHeading}>
+          <span>Последние 28 дней</span>
+          <span>
+            <i aria-hidden="true" /> день с записью
+          </span>
+        </div>
+        <div
+          aria-label="Активность записей за последние 28 дней"
+          className={styles.overviewActivityDays}
+          role="list"
+        >
+          {stats.recentDays.map((day) => (
+            <time
+              aria-label={`${formatDateShort(day.date)}: ${day.hasEntry ? "есть запись" : "нет записи"}`}
+              className={day.hasEntry ? styles.overviewActivityDayActive : ""}
+              dateTime={day.date}
+              key={day.date}
+              role="listitem"
+              title={`${formatDateShort(day.date)} — ${day.hasEntry ? "есть запись" : "нет записи"}`}
+            />
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function OverviewSignalCard({
+  compact = false,
   entries,
+  expanded = false,
   onOpenDate,
+  onToggleExpanded,
   signal,
 }: {
+  compact?: boolean;
   entries: Reflection[];
+  expanded?: boolean;
   onOpenDate: (date: string) => void;
+  onToggleExpanded?: () => void;
   signal: NonNullable<NonNullable<Reflection["overview"]>["signals"]>[number];
 }) {
   const evidence = groupSignalEvidence(signal, entries);
@@ -1234,6 +1385,66 @@ function OverviewSignalCard({
     !hasExternalObserverVoice(signal.recommendation)
       ? signal.recommendation
       : null;
+
+  if (compact) {
+    return (
+      <article
+        className={`${styles.overviewSecondaryCard} ${
+          expanded ? styles.overviewSecondaryCardExpanded : ""
+        } p-5`}
+      >
+        <p className="text-[0.68rem] font-black uppercase tracking-[0.12em] text-[#a96214]">
+          {signalKindLabel(signal.kind)}
+        </p>
+        <h2 className="mt-3 font-serif-display text-2xl font-black leading-tight tracking-[-0.035em]">
+          {title}
+        </h2>
+        <p
+          className={`mt-3 text-sm leading-6 text-[#6c5b4d] ${
+            expanded ? "" : "line-clamp-2"
+          }`}
+        >
+          {finding}
+        </p>
+        {expanded && recommendation && (
+          <div className={styles.overviewSecondaryRecommendation}>
+            <p>Следующий шаг</p>
+            <span>{recommendation}</span>
+          </div>
+        )}
+        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[#3a2a1d]/8 pt-4">
+          <span className="text-xs font-bold text-[#8b7868]">
+            Подтверждено: {evidence.length}{" "}
+            {pluralize(evidence.length, "день", "дня", "дней")}
+          </span>
+          <button
+            aria-expanded={expanded}
+            className={styles.overviewSecondaryToggle}
+            onClick={onToggleExpanded}
+            type="button"
+          >
+            {expanded ? "Свернуть" : "Развернуть"}
+            <svg
+              aria-hidden="true"
+              className={`${styles.overviewSecondaryChevron} ${
+                expanded ? styles.overviewSecondaryChevronExpanded : ""
+              }`}
+              fill="none"
+              viewBox="0 0 20 20"
+            >
+              <path
+                d="m5.5 7.5 4.5 4.5 4.5-4.5"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.7"
+              />
+            </svg>
+          </button>
+        </div>
+      </article>
+    );
+  }
 
   return (
     <article className="rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/86 p-5 shadow-[0_16px_45px_rgba(57,37,20,0.06)] sm:p-7">
@@ -1339,7 +1550,7 @@ function OverviewLoadingState({
 }) {
   if (showError) {
     return (
-      <div className="mt-5 rounded-3xl bg-[#eee7ef]/58 p-5">
+      <div className="rounded-3xl bg-[#eee7ef]/58 p-5">
         <p className="font-bold leading-7 text-[#66546a]">
           Не получилось проверить историю.
         </p>
@@ -1357,7 +1568,7 @@ function OverviewLoadingState({
   return (
     <div
       aria-live="polite"
-      className="mt-5 rounded-3xl bg-[#eee7ef]/58 p-5 text-[#66546a]"
+      className="rounded-3xl bg-[#eee7ef]/58 p-5 text-[#66546a]"
     >
       <p className="font-bold">
         {isLoading
@@ -2086,42 +2297,202 @@ function CompactHistory({
   const days = Object.entries(groupedByDate).sort(([dateA], [dateB]) =>
     dateB.localeCompare(dateA),
   );
+  const [previewDate, setPreviewDate] = useState<string | null>(
+    days[0]?.[0] ?? null,
+  );
+  const activePreviewDate =
+    previewDate && groupedByDate[previewDate]
+      ? previewDate
+      : days[0]?.[0] ?? null;
+  const previewEntries = activePreviewDate
+    ? groupedByDate[activePreviewDate] || []
+    : [];
+  const previewEntry = previewEntries[0] || null;
+  const previewInsights = buildPrimaryInsights(previewEntries);
+  const previewActions = groupDayActions(previewEntries);
+  const previewTitle = previewEntry
+    ? previewEntry.themes
+        .filter((theme) => !hasExternalObserverVoice(theme))
+        .slice(0, 2)
+        .join(" · ") || "День в деталях"
+    : "День в деталях";
 
   return (
-    <section className="overflow-hidden rounded-[2rem] border border-[#3a2a1d]/10 bg-[#fffaf1]/78 shadow-[0_14px_46px_rgba(57,37,20,0.055)]">
-      {days.map(([date, items], index) => (
-        <button
-          className={`flex w-full items-center gap-4 px-5 py-5 text-left text-[#3a2a1d] transition hover:bg-white/65 sm:px-7 ${
-            index > 0 ? "border-t border-[#3a2a1d]/8" : ""
-          }`}
-          key={date}
-          onClick={() => onSelect(date)}
-          type="button"
+    <section className={styles.historyExplorer}>
+      <div className={styles.historyIndex}>
+        {days.map(([date, items]) => {
+          const isPreviewed = activePreviewDate === date;
+          return (
+            <button
+              className={`${styles.historyIndexItem} ${
+                isPreviewed ? styles.historyIndexItemActive : ""
+              } flex w-full items-center gap-4 px-5 py-5 text-left text-[#3a2a1d] transition sm:px-6`}
+              key={date}
+              onClick={() => onSelect(date)}
+              onFocus={() => setPreviewDate(date)}
+              onMouseEnter={() => setPreviewDate(date)}
+              type="button"
+            >
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-black uppercase tracking-[0.1em] text-[#8b5a22]">
+                  {formatDate(date)}
+                </p>
+                <p className="mt-2 line-clamp-2 leading-6 text-[#5f5043]">
+                  {items[0]
+                    ? buildReflectionPreview(items[0])
+                    : "Запись сохранена — откройте день, чтобы посмотреть детали."}
+                </p>
+                <p className="mt-2 text-xs font-bold text-[#9a8b7d]">
+                  {items.length} {pluralize(items.length, "запись", "записи", "записей")}
+                </p>
+              </div>
+              <span
+                aria-hidden="true"
+                className="shrink-0 text-xl font-bold text-[#a96214]"
+              >
+                →
+              </span>
+            </button>
+          );
+        })}
+        {days.length === 0 && (
+          <p className="p-7 text-center text-[#6c5b4d]">
+            История появится после первой записи.
+          </p>
+        )}
+      </div>
+
+      {previewEntry && activePreviewDate && (
+        <article
+          aria-live="polite"
+          className={styles.historyPreview}
+          key={activePreviewDate}
         >
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-black uppercase tracking-[0.1em] text-[#8b5a22]">
-              {formatDate(date)}
-            </p>
-            <p className="mt-2 line-clamp-2 leading-6 text-[#5f5043]">
-              {items[0]
-                ? buildReflectionPreview(items[0])
-                : "Запись сохранена — откройте день, чтобы посмотреть детали."}
-            </p>
+          <div className={styles.historyPreviewTopline}>
+            <span>Предпросмотр дня</span>
+            <span>
+              {previewEntries.length} {pluralize(previewEntries.length, "запись", "записи", "записей")}
+            </span>
           </div>
-          <span
-            aria-hidden="true"
-            className="shrink-0 text-2xl font-bold text-[#a96214]"
+          <p className={styles.historyPreviewDate}>
+            {formatDate(activePreviewDate)}
+          </p>
+          <h2 className={styles.historyPreviewTitle}>{previewTitle}</h2>
+          <p className={styles.historyPreviewSummary}>
+            {buildReflectionPreview(previewEntry)}
+          </p>
+
+          {previewInsights[0] && (
+            <div className={styles.historyPreviewInsight}>
+              <p>
+                <DiaryIcon name="overview" />
+                Главное
+              </p>
+              <span>{neutralizeExternalObserverVoice(previewInsights[0])}</span>
+            </div>
+          )}
+
+          <div className={styles.historyPreviewMeta}>
+            <span>
+              <strong>{previewInsights.length}</strong>
+              {pluralize(previewInsights.length, "инсайт", "инсайта", "инсайтов")}
+            </span>
+            <span>
+              <strong>{previewActions.length}</strong>
+              {pluralize(previewActions.length, "действие", "действия", "действий")}
+            </span>
+          </div>
+
+          <button
+            className={styles.historyPreviewButton}
+            onClick={() => onSelect(activePreviewDate)}
+            type="button"
           >
-            →
-          </span>
-        </button>
-      ))}
-      {days.length === 0 && (
-        <p className="p-7 text-center text-[#6c5b4d]">
-          История появится после первой записи.
-        </p>
+            Открыть полный разбор <DiaryIcon name="arrow" />
+          </button>
+        </article>
       )}
     </section>
+  );
+}
+
+function MindFlowBrand() {
+  return (
+    <div aria-label="MindFlow" className={styles.brand}>
+      <span aria-hidden="true" className={styles.brandMark}>
+        <MindFlowMark />
+      </span>
+      <span>MindFlow</span>
+    </div>
+  );
+}
+
+function DiaryIcon({
+  name,
+}: {
+  name:
+    | "arrow"
+    | "calendar"
+    | "capture"
+    | "history"
+    | "overview"
+    | "thread";
+}) {
+  const common = {
+    "aria-hidden": true,
+    className: styles.navIcon,
+    fill: "none",
+    stroke: "currentColor",
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    strokeWidth: 1.8,
+    viewBox: "0 0 24 24",
+  };
+
+  if (name === "capture") {
+    return (
+      <svg {...common}>
+        <path d="M6 18c3.2-.8 5.9-2.6 8-5.1 1.5-1.8 2.5-3.7 2.9-5.7.2-1.2-.8-2.2-2-2-2 .4-3.9 1.4-5.7 2.9C6.7 10.2 4.9 12.9 4 16l-.7 4.7L8 20l4-4" />
+      </svg>
+    );
+  }
+  if (name === "history") {
+    return (
+      <svg {...common}>
+        <path d="M6 4.5h11.5A1.5 1.5 0 0 1 19 6v13.5H7.5A2.5 2.5 0 0 1 5 17V6.5a2 2 0 0 1 2-2Z" />
+        <path d="M8.5 4.5v15M11 8h5M11 12h5" />
+      </svg>
+    );
+  }
+  if (name === "overview") {
+    return (
+      <svg {...common}>
+        <path d="m12 3 1.1 3.2L16 8l-2.9 1.8L12 13l-1.1-3.2L8 8l2.9-1.8L12 3ZM18.5 13l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2ZM5.5 12l.8 2.2 2.2.8-2.2.8L5.5 18l-.8-2.2-2.2-.8 2.2-.8.8-2.2Z" />
+      </svg>
+    );
+  }
+  if (name === "calendar") {
+    return (
+      <svg {...common}>
+        <rect height="16" rx="2" width="18" x="3" y="5" />
+        <path d="M8 3v4M16 3v4M3 10h18" />
+      </svg>
+    );
+  }
+  if (name === "thread") {
+    return (
+      <svg {...common}>
+        <circle cx="6" cy="5" r="2" />
+        <circle cx="18" cy="12" r="2" />
+        <circle cx="6" cy="19" r="2" />
+        <path d="M8 5h2a4 4 0 0 1 4 4v0a3 3 0 0 0 3 3h-1M8 19h2a4 4 0 0 0 4-4v0a3 3 0 0 1 3-3" />
+      </svg>
+    );
+  }
+  return (
+    <svg {...common}>
+      <path d="M5 12h14M13 6l6 6-6 6" />
+    </svg>
   );
 }
 

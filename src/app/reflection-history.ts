@@ -66,6 +66,16 @@ export type OverviewSnapshot = {
 };
 
 export type OverviewMaturity = "collecting" | "early" | "established";
+export type OverviewStats = {
+  activeDays: number;
+  completedActions: number;
+  longestStreak: number;
+  recentDays: Array<{
+    date: string;
+    hasEntry: boolean;
+  }>;
+  totalEntries: number;
+};
 export const OVERVIEW_ANALYSIS_LIMIT = 30;
 
 const EXTERNAL_OBSERVER_VOICE =
@@ -441,6 +451,51 @@ export function groupDayActions(entries: DayActionReflection[]) {
       todo: group.todo,
       sources: group.sources,
     }));
+}
+
+export function buildOverviewStats(
+  entries: DayActionReflection[],
+  currentDate: string,
+): OverviewStats {
+  const availableEntries = entries.filter(
+    (entry) => entry.entryDate <= currentDate,
+  );
+  const activeDates = Array.from(
+    new Set(availableEntries.map((entry) => entry.entryDate)),
+  ).sort();
+  const activeDateSet = new Set(activeDates);
+  let currentStreak = 0;
+  let longestStreak = 0;
+
+  for (let index = 0; index < activeDates.length; index += 1) {
+    const previousDate = activeDates[index - 1];
+    currentStreak =
+      previousDate &&
+      differenceInCalendarDays(activeDates[index], previousDate) === 1
+        ? currentStreak + 1
+        : 1;
+    longestStreak = Math.max(longestStreak, currentStreak);
+  }
+
+  const completedActions = groupDayActions(availableEntries).filter(
+    (action) =>
+      action.sources.length > 0 &&
+      action.sources.every((source) => source.completed),
+  ).length;
+
+  return {
+    activeDays: activeDates.length,
+    completedActions,
+    longestStreak,
+    recentDays: Array.from({ length: 28 }, (_, index) => {
+      const date = shiftDate(currentDate, index - 27);
+      return {
+        date,
+        hasEntry: activeDateSet.has(date),
+      };
+    }),
+    totalEntries: availableEntries.length,
+  };
 }
 
 export function buildOverviewSnapshot(

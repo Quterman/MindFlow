@@ -94,6 +94,12 @@
   border-radius: 50%;
   background: rgba(255, 250, 240, 0.72);
   box-shadow: 0 10px 30px rgba(169, 95, 18, 0.14);
+  color: var(--gold-dark);
+}
+
+.brandMark svg {
+  width: 32px;
+  height: 32px;
 }
 
 .navLinks {

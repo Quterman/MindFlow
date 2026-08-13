@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import styles from "./landing.module.css";
+import MindFlowMark from "./MindFlowMark";
 
 export const metadata: Metadata = {
   title: "MindFlow — мысли в ясность",
@@ -70,7 +71,7 @@ export default function Home() {
         <header className={`${styles.container} ${styles.nav}`}>
           <Link className={styles.brand} href="/" aria-label="MindFlow">
             <span className={styles.brandMark} aria-hidden="true">
-              ✦
+              <MindFlowMark />
             </span>
             <span>MindFlow</span>
           </Link>
@@ -316,7 +317,7 @@ export default function Home() {
         <footer className={`${styles.container} ${styles.footer}`}>
           <div className={styles.brand}>
             <span className={styles.brandMark} aria-hidden="true">
-              ✦
+              <MindFlowMark />
             </span>
             <span>MindFlow</span>
           </div>

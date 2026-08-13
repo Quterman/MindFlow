@@ -6,6 +6,7 @@ import {
   buildImportantEntryInsights,
   buildOverviewSourceSignature,
   buildOverviewSnapshot,
+  buildOverviewStats,
   buildPrimaryInsightPreview,
   buildPrimaryInsights,
   buildReflectionPreview,
@@ -22,6 +23,73 @@ test("changes overview maturity by total reflection count", () => {
   assert.equal(getOverviewMaturity(3), "early");
   assert.equal(getOverviewMaturity(7), "early");
   assert.equal(getOverviewMaturity(8), "established");
+});
+
+test("builds all-time overview statistics from unique past dates and tasks", () => {
+  const stats = buildOverviewStats(
+    [
+      {
+        id: "first-morning",
+        entryDate: "2026-07-01",
+        createdAt: "2026-07-01T08:00:00.000Z",
+        todos: ["Подготовить план"],
+        completedTodos: ["Подготовить план"],
+      },
+      {
+        id: "first-evening",
+        entryDate: "2026-07-01",
+        createdAt: "2026-07-01T20:00:00.000Z",
+        todos: ["  подготовить   план  ", "Отправить письмо"],
+        completedTodos: ["Подготовить план", "Отправить письмо"],
+      },
+      {
+        id: "second",
+        entryDate: "2026-07-02",
+        createdAt: "2026-07-02T10:00:00.000Z",
+        todos: ["Назначить встречу"],
+        completedTodos: [],
+      },
+      {
+        id: "fourth",
+        entryDate: "2026-07-04",
+        createdAt: "2026-07-04T10:00:00.000Z",
+        todos: [],
+        completedTodos: [],
+      },
+      {
+        id: "future",
+        entryDate: "2026-07-05",
+        createdAt: "2026-07-04T12:00:00.000Z",
+        todos: ["Будущая задача"],
+        completedTodos: ["Будущая задача"],
+      },
+    ],
+    "2026-07-04",
+  );
+
+  assert.equal(stats.activeDays, 3);
+  assert.equal(stats.completedActions, 2);
+  assert.equal(stats.longestStreak, 2);
+  assert.equal(stats.totalEntries, 4);
+  assert.equal(stats.recentDays.length, 28);
+  assert.deepEqual(stats.recentDays.slice(-5), [
+    { date: "2026-06-30", hasEntry: false },
+    { date: "2026-07-01", hasEntry: true },
+    { date: "2026-07-02", hasEntry: true },
+    { date: "2026-07-03", hasEntry: false },
+    { date: "2026-07-04", hasEntry: true },
+  ]);
+});
+
+test("returns empty overview statistics without entries", () => {
+  const stats = buildOverviewStats([], "2026-07-04");
+
+  assert.equal(stats.activeDays, 0);
+  assert.equal(stats.completedActions, 0);
+  assert.equal(stats.longestStreak, 0);
+  assert.equal(stats.totalEntries, 0);
+  assert.equal(stats.recentDays.length, 28);
+  assert.equal(stats.recentDays.some((day) => day.hasEntry), false);
 });
 
 test("changes the overview source when an action or entry changes", () => {
