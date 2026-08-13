@@ -1080,8 +1080,6 @@ function OverviewView({
         </h1>
       </header>
 
-      <OverviewRhythm stats={stats} />
-
       <div className={styles.overviewBody}>
         {maturity === "collecting" ? (
           <CollectingOverview entryCount={entryCount} onAddEntry={onAddEntry} />
@@ -1123,6 +1121,8 @@ function OverviewView({
           </div>
         )}
       </div>
+
+      <OverviewStatsDisclosure stats={stats} />
     </div>
   );
 }
@@ -1357,6 +1357,59 @@ function OverviewRhythm({
         </div>
       </div>
     </section>
+  );
+}
+
+function OverviewStatsDisclosure({
+  stats,
+}: {
+  stats: ReturnType<typeof buildOverviewStats>;
+}) {
+  const activeDaysLabel = pluralize(
+    stats.activeDays,
+    "день",
+    "дня",
+    "дней",
+  );
+  const entriesLabel = pluralize(
+    stats.totalEntries,
+    "запись",
+    "записи",
+    "записей",
+  );
+  const completedLabel = pluralize(
+    stats.completedActions,
+    "задача завершена",
+    "задачи завершены",
+    "задач завершено",
+  );
+
+  return (
+    <details className={styles.overviewStatsDisclosure}>
+      <summary className={styles.overviewStatsSummary}>
+        <span>
+          <strong>Статистика использования</strong>
+          <span>
+            {stats.activeDays} {activeDaysLabel} · {stats.totalEntries}{" "}
+            {entriesLabel} · {stats.completedActions} {completedLabel}
+          </span>
+        </span>
+        <span aria-hidden="true" className={styles.overviewStatsChevron}>
+          <svg fill="none" viewBox="0 0 20 20">
+            <path
+              d="m5.5 7.5 4.5 4.5 4.5-4.5"
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="1.7"
+            />
+          </svg>
+        </span>
+      </summary>
+      <div className={styles.overviewStatsContent}>
+        <OverviewRhythm stats={stats} />
+      </div>
+    </details>
   );
 }
 
