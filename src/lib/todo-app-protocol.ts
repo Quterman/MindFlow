@@ -6,7 +6,9 @@ const TODO_APP_LOCAL_ENDPOINT =
 const TODO_APP_PRODUCTION_ENDPOINT =
   "https://quiet-todo-test.vercel.app/api/integrations/mindflow/tasks";
 
-export type TodoAppSignedImportRequest = TodoAppImportPayload & {
+export type TodoAppSignedImportRequest = Omit<TodoAppImportPayload, "version"> & {
+  version: 2;
+  sourceEmail: string;
   sourceUserId: string;
   targetDate: string;
 };
@@ -43,6 +45,7 @@ export function serializeTodoAppSignedRequest(
     version: input.version,
     source: input.source,
     sourceUserId: input.sourceUserId,
+    sourceEmail: input.sourceEmail,
     targetDate: input.targetDate,
     tasks: input.tasks.map((task) => ({
       sourceId: task.sourceId,

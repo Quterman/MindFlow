@@ -16,6 +16,7 @@ export class TodoAppIntegrationError extends Error {
   constructor(
     message: string,
     readonly kind: "configuration" | "unavailable" | "rejected",
+    readonly remoteCode: string | null = null,
   ) {
     super(message);
     this.name = "TodoAppIntegrationError";
@@ -25,6 +26,7 @@ export class TodoAppIntegrationError extends Error {
 export async function sendTodoAppImport(
   payload: TodoAppImportPayload,
   sourceUserId: string,
+  sourceEmail: string,
   targetDate: string,
 ): Promise<TodoAppImportResult> {
   const endpoint = getTodoAppImportEndpoint({
@@ -42,6 +44,8 @@ export async function sendTodoAppImport(
 
   const requestBody = serializeTodoAppSignedRequest({
     ...payload,
+    version: 2,
+    sourceEmail,
     sourceUserId,
     targetDate,
   });
@@ -70,6 +74,7 @@ export async function sendTodoAppImport(
   }
 
   const responseBody = (await response.json().catch(() => null)) as {
+    code?: unknown;
     status?: unknown;
     taskId?: unknown;
   } | null;
@@ -83,6 +88,7 @@ export async function sendTodoAppImport(
     throw new TodoAppIntegrationError(
       "TodoApp rejected the task.",
       response.ok ? "unavailable" : "rejected",
+      typeof responseBody?.code === "string" ? responseBody.code : null,
     );
   }
 
