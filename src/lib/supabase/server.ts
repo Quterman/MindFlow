@@ -37,6 +37,7 @@ export async function getAuthenticatedUser() {
 
   return {
     email: user.email,
+    emailConfirmedAt: user.email_confirmed_at,
     supabase,
     userId: user.id,
   };

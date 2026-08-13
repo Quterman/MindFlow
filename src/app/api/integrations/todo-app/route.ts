@@ -20,6 +20,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Требуется вход." }, { status: 401 });
   }
 
+  const sourceEmail = user.email?.trim().toLowerCase();
+  if (!sourceEmail || !user.emailConfirmedAt) {
+    return NextResponse.json(
+      { error: "Подтвердите почту MindFlow, чтобы отправлять задачи в TodoApp." },
+      { status: 403 },
+    );
+  }
+
   let body: {
     reflectionId?: unknown;
     targetDate?: unknown;
@@ -84,6 +92,7 @@ export async function POST(request: Request) {
     const result = await sendTodoAppImport(
       payload,
       user.userId,
+      sourceEmail,
       body.targetDate,
     );
     return NextResponse.json(result, {
@@ -91,14 +100,20 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     if (error instanceof TodoAppIntegrationError) {
+      const accountNotFound = error.remoteCode === "account_not_found";
       return NextResponse.json(
         {
           error:
             error.kind === "configuration"
               ? "Интеграция TodoApp ещё не настроена."
+              : accountNotFound
+                ? "В TodoApp нет подтверждённого аккаунта с этой почтой."
               : "Не получилось добавить задачу в TodoApp.",
         },
-        { status: error.kind === "configuration" ? 503 : 502 },
+        {
+          status:
+            error.kind === "configuration" ? 503 : accountNotFound ? 409 : 502,
+        },
       );
     }
 

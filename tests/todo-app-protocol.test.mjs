@@ -44,8 +44,9 @@ test("signs the exact timestamp and canonical request body", () => {
 test("serializes every signed field in a stable order", () => {
   assert.equal(
     serializeTodoAppSignedRequest({
-      version: 1,
+      version: 2,
       source: "mindflow",
+      sourceEmail: "demo@example.com",
       sourceUserId: "mindflow-owner",
       targetDate: "2026-08-04",
       tasks: [
@@ -57,6 +58,6 @@ test("serializes every signed field in a stable order", () => {
         },
       ],
     }),
-    '{"version":1,"source":"mindflow","sourceUserId":"mindflow-owner","targetDate":"2026-08-04","tasks":[{"sourceId":"mindflow:reflection:task","title":"Сделать следующий шаг","sourceDate":"2026-08-03","suggestedView":"later"}]}',
+    '{"version":2,"source":"mindflow","sourceUserId":"mindflow-owner","sourceEmail":"demo@example.com","targetDate":"2026-08-04","tasks":[{"sourceId":"mindflow:reflection:task","title":"Сделать следующий шаг","sourceDate":"2026-08-03","suggestedView":"later"}]}',
   );
 });
