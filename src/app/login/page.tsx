@@ -34,8 +34,7 @@ export default async function LoginPage({
           Вернуться к своим мыслям
         </h1>
         <p className="mt-4 leading-7 text-[#6c5b4d]">
-          Войдите с тем же email и паролем, которые используете в
-          FinanceTracker.
+          Временно регистрация новых пользователей закрыта.
         </p>
 
         <form action={login} className="mt-7 grid gap-4">
@@ -95,9 +94,6 @@ export default async function LoginPage({
             Войти
           </button>
         </form>
-        <p className="mt-5 text-sm leading-6 text-[#7a6a5c]">
-          Регистрации здесь нет: доступ открыт только существующему аккаунту.
-        </p>
       </section>
     </main>
   );
